@@ -273,3 +273,69 @@ def test_render_matrix_scales_both_directions_equally():
 
     assert (matrix.a, matrix.d) == (2.0, 2.0)
     assert (matrix.b, matrix.c, matrix.e, matrix.f) == (0, 0, 0, 0)
+
+
+# --- which page is under a point ------------------------------------------------
+
+
+def test_page_at_finds_the_page_under_a_scene_point(rotated):
+    # Page 0 is 612 wide and centered on the 792 wide pages: x from 90 to 702.
+    assert geometry.page_at(rotated, 100, 10) == 0
+    assert geometry.page_at(rotated, 400, 792 + PAGE_GAP + 5) == 1
+    last = rotated[3]
+    assert geometry.page_at(rotated, 10, last.bottom - 1) == 3
+
+
+def test_page_at_is_none_between_and_beside_pages(rotated):
+    assert geometry.page_at(rotated, 400, 792 + PAGE_GAP / 2) is None  # in the gap
+    assert geometry.page_at(rotated, 50, 10) is None  # left of the narrow page 0
+    assert geometry.page_at(rotated, 750, 10) is None  # right of it
+    assert geometry.page_at(rotated, 400, -5) is None  # above the first page
+    assert geometry.page_at(rotated, 400, rotated[3].bottom + 5) is None
+    assert geometry.page_at([], 0, 0) is None
+
+
+# --- quads on the displayed page ------------------------------------------------
+
+
+def test_pdf_to_page_is_pdf_to_scene_without_the_page_origin(rotated):
+    for placement in rotated:
+        on_page = placement.pdf_to_page(pymupdf.Point(72, 90))
+        in_scene = placement.pdf_to_scene(pymupdf.Point(72, 90))
+
+        assert in_scene == close_to(
+            on_page[0] + placement.origin_x, on_page[1] + placement.origin_y
+        )
+
+
+def test_quad_on_an_upright_page_keeps_its_corners(rotated):
+    quad = pymupdf.Rect(72, 80, 172, 95).quad
+
+    corners = rotated[0].quad_on_page(quad)
+
+    # Around the outline: upper-left, upper-right, lower-right, lower-left.
+    assert corners == [(72, 80), (172, 80), (172, 95), (72, 95)]
+
+
+def test_quad_on_a_rotated_page_turns_with_the_page(rotated):
+    quad = pymupdf.Rect(72, 80, 172, 95).quad
+
+    corners = rotated[1].quad_on_page(quad)  # the page rotated by 90 degrees
+
+    # 90 degrees clockwise: (x, y) -> (792 - y, x). The wide, flat box
+    # becomes a narrow, tall one near the right edge.
+    assert corners[0] == close_to(712, 72)
+    assert corners[1] == close_to(712, 172)
+    assert corners[2] == close_to(697, 172)
+    assert corners[3] == close_to(697, 72)
+
+
+# --- thumbnails -------------------------------------------------------------------
+
+
+def test_fit_scale_is_limited_by_the_tighter_side():
+    # A Letter page in a 120 x 180 box: the width is the limit.
+    assert geometry.fit_scale(612, 792, 120, 180) == pytest.approx(120 / 612)
+    # A very tall page: the height is the limit.
+    assert geometry.fit_scale(100, 2000, 120, 180) == pytest.approx(180 / 2000)
+    assert geometry.fit_scale(0, 0, 120, 180) == 1.0

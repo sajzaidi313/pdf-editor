@@ -31,10 +31,11 @@ Generate most fixtures **with a script** (`tests/fixtures/make_fixtures.py`) usi
 | `page_labels.pdf` | page labels i–iv then 1–4 (go-to-page box, V12) | generated + `set_page_labels` |
 | `owner_only_restricted.pdf` | opens without pw, no-modify permission | generated |
 | `secret_for_redaction.pdf` | text "SECRET-4471", an image containing a known region, vector line under secret, a table border rectangle that crosses the redaction area | generated |
-| `outline_nested.pdf` | 3-level TOC | generated + `set_toc` |
+| `outline_nested.pdf` | 3-level TOC, plus one bookmark that points nowhere (page `-1`) | generated + `set_toc` |
+| `search_and_select.pdf` | search and text selection: a wrapped paragraph with one "lazy dog" split over two lines, a word hyphenated at a line end, "fox fox FOX", a second page, a page rotated 90° | generated (`insert_textbox` for the paragraph) |
 | `links.pdf` | internal GoTo + URI links | generated + `insert_link` |
 | `subset_font_real.pdf` | real file with subset embedded fonts (for text-edit font fallback) | export from a word processor |
-| `scanned_no_text.pdf` | image-only page | generated: insert a PNG of text |
+| `scanned_no_text.pdf` | image-only page | generated: a small gray picture of one line of text, placed with `insert_image` |
 | `large_500_pages.pdf` | performance | generated on demand in a perf test (don't commit) |
 | `broken_xref.pdf` | repair path (`is_repaired`) | take `simple_text.pdf` bytes and corrupt the xref offset |
 | `not_a_pdf.pdf` | error path | one fixed line of text (not random bytes, so the file is the same on every run) |
@@ -49,7 +50,9 @@ Add each one when code first relies on it:
 - `set_rotation(90)` on a 612×792 page → `page.rect` is 792×612, `mediabox` unchanged.
 - `tobytes()` → reopen keeps annotation xrefs; `save(garbage=2)` → reopen renumbers them.
 - Non-incremental `save()` to the open file's own path raises.
-- `doc.select([3,2,1,0])` remaps the outline; `delete_page` leaves `-1` outline entries.
+- `doc.select([3,2,1,0])` remaps the outline; `delete_page` leaves `-1` outline entries. (The `delete_page` half exists since M2: `test_outline.py`.)
+- `rawdict` gives one box per character, unrotated and CropBox-relative; a scan has no text blocks (`test_text_extraction.py`, M2).
+- `search_for` returns one quad per line piece, so matches cannot be counted with it (`test_search.py`, M2).
 - Inserted text is stored hex-encoded (why the redaction byte check needs the hex form).
 - `apply_redactions()` removes the text from `get_text()`.
 - `load_annot(annot_id)` finds an annotation by `/NM`; `annot.update()` keeps `/NM`; `/NM` survives `save(garbage=3)` (doc 02 §2.2).
@@ -125,6 +128,18 @@ def test_redaction_removes_text(tmp_path):
 - `owner_only_restricted.pdf` → full save → reopened file has the same `permissions`.
 - Autosave writes no recovery file for an encrypted doc; after ApplyRedactions, the recovery file passes the raw-bytes secret check (§ Redaction).
 - Save As switches model path.
+
+### Text, search and selection (M2)
+All on `search_and_select.pdf`; its lines, offsets and search counts are in `tests/fixtures/README.md`.
+- `core/text.py`: lines come out in reading order with one box per character; text on the rotated page keeps unrotated positions; a scan (`scanned_no_text.pdf`) has no text.
+- Hit-testing: left half of a character → the offset before it, right half → after it; beside a short last line → that line's end; far above/below the text → its first/last offset.
+- Double-click → the word without its full stop; a space or a spot away from text → nothing. Triple-click → the whole line.
+- A range over two lines → two quads and text with one `\n`.
+- `core/search.py`: a match split over two lines is **one** hit with two quads; "FOX" finds all four "fox"; "example" finds "exam-" + "ple"; matches do not overlap; "ß" matches "SS".
+- `SearchResults` keeps hits in document order whatever the order pages were searched in; next/previous wrap around.
+- Outline: `outline_nested.pdf` → entries with level and 0-based page; the bookmark that points nowhere has `page_index` None; a file without outline → `[]`.
+- GUI (pytest-qt): drag across text selects it and Copy puts it on the (stand-in) clipboard; a search marks hits on all three pages and "Next" walks "1 of 4" … "4 of 4" → "1 of 4"; the thumbnail list only draws rows that were asked for; clicking a thumbnail or an outline entry moves the page view.
+- **GUI tests never touch the real clipboard**: `ui/clipboard.py` is replaced by the `copied_texts` fixture, like the dialogs are.
 
 ### Extras
 - Page labels: `page_labels.pdf` (labels i–iv then 1–4) → go-to "iii" (or "III") lands on page index 2; go-to "3" finds the page *labelled* 3 (index 6), because a label wins; go-to "5" matches no label and so means the fifth page (index 4).

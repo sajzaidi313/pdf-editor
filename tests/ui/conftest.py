@@ -15,6 +15,7 @@ from collections.abc import Iterator
 import pytest
 from PySide6.QtCore import QSettings
 
+from pdfeditor.ui import clipboard
 from pdfeditor.ui.dialogs import error_dialog, password_dialog
 from pdfeditor.ui.main_window import MainWindow
 from pdfeditor.ui.page_view import PageView
@@ -64,11 +65,26 @@ def password_prompt(monkeypatch) -> PasswordPrompt:
     return prompt
 
 
+@pytest.fixture
+def copied_texts(monkeypatch) -> list[str]:
+    """Replaces the clipboard. Holds every text the app "copied".
+
+    The real clipboard belongs to the person running the tests; a test must
+    not overwrite what they copied last.
+    """
+    texts: list[str] = []
+    monkeypatch.setattr(clipboard, "copy_text", texts.append)
+    return texts
+
+
 # `qtbot` comes from pytest-qt. Asking for it makes sure a QApplication
 # exists, which Qt requires before any widget is created.
 @pytest.fixture
-def window(qtbot, settings, shown_errors, password_prompt) -> Iterator[MainWindow]:
-    """A shown main window with test settings and stand-in dialogs."""
+def window(
+    qtbot, settings, shown_errors, password_prompt, copied_texts
+) -> Iterator[MainWindow]:
+    """A shown main window with test settings, stand-in dialogs and a
+    stand-in clipboard."""
     main_window = MainWindow(settings=settings)
     qtbot.addWidget(main_window)  # qtbot destroys the window after the test
     main_window.show()

@@ -9,11 +9,25 @@ This file must not import Qt (CLAUDE.md, hard rule 1).
 """
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf
 
 from pdfeditor.core.errors import EncryptedError, PdfOpenError
+from pdfeditor.core.text import PageText, extract_page_text
+
+# How many pages' text is remembered at once (see DocumentModel.page_text).
+MAX_PAGES_WITH_TEXT = 8
+
+
+@dataclass(frozen=True)
+class OutlineEntry:
+    """One line of a PDF's outline (its "bookmarks" or table of contents)."""
+
+    level: int  # 1 = top level, 2 = inside the level-1 entry above it, ...
+    title: str
+    page_index: int | None  # 0-based target page; None when it points nowhere
 
 
 class DocumentModel:
@@ -28,6 +42,8 @@ class DocumentModel:
         self._locked: bool = False
         # Page labels, read on first use (see _page_labels).
         self._labels: list[str] | None = None
+        # Text of the pages used most recently (see page_text).
+        self._page_texts: dict[int, PageText] = {}
 
     # --- opening and closing ------------------------------------------------
 
@@ -62,6 +78,7 @@ class DocumentModel:
         self.was_repaired = False
         self._locked = False
         self._labels = None
+        self._page_texts = {}
 
     @property
     def is_open(self) -> bool:
@@ -151,6 +168,57 @@ class DocumentModel:
             labels = [""] * doc.page_count
         self._labels = labels
         return labels
+
+    # --- outline ----------------------------------------------------------------
+
+    def outline(self) -> list[OutlineEntry]:
+        """The document's outline, top to bottom. Empty when it has none.
+
+        The list is flat; `level` says how deep each entry sits. An entry
+        whose target page does not exist gets page_index None.
+        """
+        doc = self._require_unlocked_doc()
+        entries: list[OutlineEntry] = []
+        # get_toc() rows are [level, title, page number counted from 1].
+        # The page number is -1 for a bookmark that points nowhere.
+        for level, title, page_number in doc.get_toc(simple=True):
+            in_document = 1 <= page_number <= doc.page_count
+            # Titles sometimes contain line breaks; show them as one line.
+            clean_title = " ".join(str(title).split())
+            entries.append(
+                OutlineEntry(
+                    level=int(level),
+                    title=clean_title,
+                    page_index=page_number - 1 if in_document else None,
+                )
+            )
+        return entries
+
+    # --- text -------------------------------------------------------------------
+
+    def page_text(self, index: int, remember: bool = True) -> PageText:
+        """The characters of the page at `index` and where each one sits.
+
+        Reading them takes a few milliseconds, and the mouse asks for the
+        same page over and over while it moves, so the last few pages are
+        remembered. A dict keeps its entries in the order they were added:
+        the first key is the oldest and is the one dropped when the limit
+        is reached.
+
+        Pass remember=False when walking through the whole document (the
+        search does): that would only push out the pages the mouse is on.
+        """
+        cached = self._page_texts.get(index)
+        if cached is not None:
+            return cached
+        page_text = extract_page_text(self.page(index))
+        if not remember:
+            return page_text
+        if len(self._page_texts) >= MAX_PAGES_WITH_TEXT:
+            oldest = next(iter(self._page_texts))
+            del self._page_texts[oldest]
+        self._page_texts[index] = page_text
+        return page_text
 
     # --- helpers --------------------------------------------------------------
 

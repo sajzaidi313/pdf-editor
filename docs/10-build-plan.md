@@ -59,9 +59,9 @@ Rough effort assumes a beginner working evenings with Claude Code: ~1–2 weeks 
 ## M2: Thumbnails, search, text selection & copy
 **Learn:** Qt model/view (`QAbstractListModel`), text extraction (`rawdict`), hit-testing.
 **Tasks**
-- Sidebar with thumbnails (click → navigate).
-- Search bar: find all, highlight hits (overlay items), next/prev, count.
-- Select tool: drag-select text, Ctrl+C copy; I-beam cursor over text.
+- Sidebar with thumbnails (click → navigate). Drawn directly, only the visible ones, a few at a time; the render scheduler takes over in M3. Drag to reorder and multi-select wait for the page commands (M6).
+- Search bar: find all, highlight hits (overlay items), next/prev, count. Searches one page per turn of the event loop so the window stays responsive; M3 moves it into the background process. No results list in the sidebar yet.
+- Select tool: drag-select text, Ctrl+C copy; I-beam cursor over text. Also double-click (word) and triple-click (line). A first small `Tool` base class and `SelectTool`; the tool controller and tool switching come in M5.
 - Outline (TOC) panel.
 
 **Done when:** you can find a word in a long doc and copy a paragraph.

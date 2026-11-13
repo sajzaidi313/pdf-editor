@@ -112,11 +112,18 @@ Hybrid used for editing: while one annotation is being moved, temporarily set it
 
 ## 8. Text selection & hit-testing
 
-- On page load (lazily, first interaction), extract `page.get_text("rawdict")` → flat list of chars with bboxes and (block, line) indexes; cache per page_rev.
-- Selection by drag: find char nearest to press point and to current point; select all chars between them in reading order (block→line→char order). Draw selection as merged per-line rectangles (one `QGraphicsPathItem`).
-- Copy: `tp.extractSelection(pa, pb)` or join selected chars (insert `\n` between lines).
-- Double-click: select word (`get_text("words")`); triple-click: line.
-- Cursor: I-beam over text (check if point within any char/line bbox; use a coarse grid index for speed), arrow elsewhere, pointer over links/widgets.
+Built in M2 (`core/text.py`, `ui/tools/select_tool.py`):
+
+- **One text model for everything.** `extract_page_text(page)` reads `rawdict` into a `PageText`: the page's lines, each with its text, one box per character, its block number and its direction. Selection, copy *and* search (`core/search.py`) all work on it, so they can never disagree about where the text is.
+- **Offsets.** A position in the text is an offset: the number of characters before it, counted over the whole page (the gap in front of a character, like a text cursor). A selection is a range `(start, end)`.
+- **Reading and caching:** lazily, on the first interaction with a page. `DocumentModel.page_text(i)` remembers the last 8 pages and forgets all of them when another file opens. (From M4 on the cache must also be dropped when a page changes: key it by `page_rev`.)
+- **Drag:** `offset_at(point)` for the press point and for the current point; the range between them is the selection. The line is chosen first (a line level with the pointer wins over a nearer line above or below, so dragging beside a short last line selects it to its end), then the gap within the line, measured along the line's direction.
+- **Drawing:** `quads_in_range()` gives one quad per line, shown as a `QuadOverlay` (a child item of the `PageItem`, layer `SELECTION`; see `ui/overlays.py`). Overlays are painted with the "multiply" blend, like a highlighter pen, so the text under them stays black.
+- **Copy:** `text_in_range()` joins the selected characters, with `\n` between lines. Deliberately *not* `tp.extractSelection()`: two methods could copy something other than what is highlighted.
+- **Double-click** selects the word (`word_range_at`: letters, digits, `_` and apostrophes), **triple-click** the line (`line_range_at`). Qt has no triple-click event; `PageView` counts a press shortly after a double-click on the same spot as the third click.
+- **Cursor:** I-beam when the point is on a line's box (give or take 2 pt), arrow elsewhere. Needs mouse tracking on the view's viewport. Later: pointer over links/widgets.
+- **Limits (M2):** a selection stays within one page; no auto-scroll while dragging; right-to-left and vertical scripts are selected in the order MuPDF reports them.
+- A page without text (a scan) shows a status-bar message when the user tries to select on it.
 
 ## 9. Links
 
@@ -126,9 +133,15 @@ Hybrid used for editing: while one annotation is being moved, temporarily set it
 
 ## 10. Thumbnails
 
-- Render at fixed width (e.g. 120 logical px) using the same scheduler with LOW priority; cache in the thumbnail tier.
-- `QListView` in `IconMode`, `setFlow(TopToBottom)`, `setDragDropMode(InternalMove)`, multi-selection.
-- Lazy: model returns a placeholder icon until rendered; `dataChanged` when ready.
+Built in M2 (`ui/thumbnails.py`):
+
+- A thumbnail fits a box of 120 × 180 logical px: an ordinary page is 120 wide, a very tall one is limited by the height (`geometry.fit_scale`).
+- Model/view/delegate: `ThumbnailModel` (a `QAbstractListModel`) knows the pages, `ThumbnailView` (a `QListView`) scrolls them, `ThumbnailDelegate` paints one row (picture centered, page label below, a soft tint behind the current page).
+- Lazy: the view only asks for the rows on screen. The model answers with blank paper of the right size, queues the row, draws one thumbnail per turn of the event loop (newest request first) and emits `dataChanged` when it is ready. At most 40 requests wait and 400 pictures are kept.
+- The model also answers `SizeHintRole`, so laying out the list never needs a picture.
+- The current page's row is selected and scrolled into view; a click (or Enter) asks the page view to go there.
+
+Still to come: drawing through the render scheduler with LOW priority and the thumbnail cache tier (M3); multi-selection and drag to reorder with `setDragDropMode(InternalMove)` (M6, needs the page commands).
 
 ## 11. Performance checklist
 

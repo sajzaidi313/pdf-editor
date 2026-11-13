@@ -4,9 +4,10 @@ A desktop PDF editor written in Python with PySide6 (Qt 6) and PyMuPDF.
 It is a learning project, built one milestone at a time; the plan is in
 `docs/10-build-plan.md`.
 
-**Status:** M1 (open and view). The app opens PDFs, including
+**Status:** M2 (view, find and copy). The app opens PDFs, including
 password-protected ones, and shows all pages with zoom and page navigation.
-Editing starts in later milestones.
+A sidebar has page thumbnails and the outline (bookmarks). You can search
+the text and select and copy it. Editing starts in later milestones.
 
 ## Setup (Windows)
 
@@ -35,7 +36,11 @@ File > Open Recent, or drag a PDF onto the window.
 | 100% / fit page / fit width | Ctrl+0 / Ctrl+1 / Ctrl+2 |
 | Next / previous page | PgDn / PgUp |
 | First / last page | Home / End |
-| Go to a page | type a page number or page label in the Page box, then Enter |
+| Go to a page | type a page number or page label in the Page box, then Enter; or click a thumbnail or an outline entry in the sidebar |
+| Show / hide the sidebar | F4 |
+| Find | Ctrl+F, type, then Enter / Shift+Enter (or F3 / Shift+F3) for the next / previous match; Esc closes the find bar |
+| Select text | drag across it; double-click a word; triple-click a line |
+| Copy the selected text | Ctrl+C |
 
 ## Build a stand-alone app
 

@@ -251,7 +251,7 @@ Dialog with checkboxes mapped 1:1 to `doc.scrub` parameters. Always followed by 
 
 ## S. Other document-level features
 
-- **Search (V6):** the background process (not a thread) iterates pages, `page.search_for(term, quads=True)`, emits results per page; UI highlights quads as overlay items (not annotations). Cancel on new search.
+- **Search (V6):** iterate the pages, `core.search.find_in_page(page_text, term, page_index)` on each, emit the hits per page; the UI highlights their quads as overlay items (not annotations). Cancel on new search. Not `page.search_for`: it cannot tell which quads form one match (doc 04 §4). Built in M2 on the UI thread, one page per turn of the event loop (`ui/find_controller.py`); M3 moves the per-page work into the background process (not a thread), which then returns plain data: page index, offsets and quad corner numbers.
 - **Properties (S9):** read/write `doc.metadata` → `doc.set_metadata({...})`. Command with old/new dict (cheap undo).
 - **Export images (S6):** `page.get_pixmap(dpi=d).save(path)`; for JPG use `pix.save(path, jpg_quality=85)` (✅ parameter exists in 2.1).
 - **Optimize (S5):** dialog: image target DPI, quality; run on a *copy*: `doc.rewrite_images(dpi_threshold=..., dpi_target=..., quality=...)`, `doc.subset_fonts()`, `save(garbage=4, deflate=True, use_objstms=1)`; show size before/after; let user keep or discard.

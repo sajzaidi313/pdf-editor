@@ -127,7 +127,9 @@ Priority: **P0** = MVP must-have · **P1** = v1.0 · **P2** = later/nice-to-have
 |---|---|
 | Open / Save / Save As | Ctrl+O / Ctrl+S / Ctrl+Shift+S |
 | Undo / Redo | Ctrl+Z / Ctrl+Y (Win) · Ctrl+Shift+Z |
-| Find | Ctrl+F; F3 / Shift+F3 next/prev |
+| Find | Ctrl+F; F3 / Shift+F3 next/prev (in the find box: Enter / Shift+Enter); Esc closes the find bar |
+| Copy selected text | Ctrl+C |
+| Show / hide the sidebar | F4 |
 | Zoom in / out / 100% / fit page / fit width | Ctrl+= / Ctrl+- / Ctrl+0 / Ctrl+1 / Ctrl+2 |
 | Select tool / Hand tool | V / H (Space held = temporary hand) |
 | Highlight / Note / Text box / Pen | Ctrl+Alt+H / N / T / P |

@@ -2,7 +2,7 @@
 
 from PySide6.QtGui import QColor, QImage
 
-from pdfeditor.render.renderer import render_page
+from pdfeditor.render.renderer import render_page, render_thumbnail
 
 WHITE = QColor("white")
 
@@ -53,3 +53,38 @@ def test_image_owns_its_pixels(qtbot, model, fixtures_dir):
     model.close()
 
     assert has_ink(image, 72, 77, 106, 94)
+
+
+# --- thumbnails ---------------------------------------------------------------
+
+
+def test_thumbnail_fits_the_box_it_is_given(qtbot, model, fixtures_dir):
+    model.open(fixtures_dir / "rotated_pages.pdf")
+
+    upright = render_thumbnail(model.page(0), 120, 180, device_pixel_ratio=1.0)
+    on_its_side = render_thumbnail(model.page(1), 120, 180, device_pixel_ratio=1.0)
+
+    assert (upright.width(), upright.height()) == (120, 156)
+    assert (on_its_side.width(), on_its_side.height()) == (120, 93)
+
+
+def test_thumbnail_for_a_hidpi_screen_has_more_pixels_and_says_so(
+    qtbot, model, fixtures_dir
+):
+    model.open(fixtures_dir / "simple_text.pdf")
+
+    image = render_thumbnail(model.page(0), 120, 180, device_pixel_ratio=2.0)
+
+    assert image.width() == 240  # twice the pixels ...
+    assert image.devicePixelRatio() == 2.0
+    assert image.deviceIndependentSize().width() == 120  # ... same room on screen
+
+
+def test_thumbnail_shows_the_page(qtbot, model, fixtures_dir):
+    model.open(fixtures_dir / "simple_text.pdf")
+
+    image = render_thumbnail(model.page(0), 120, 180, device_pixel_ratio=1.0)
+
+    # "Lorem ipsum ..." sits about a tenth of the way down the page.
+    assert has_ink(image, 10, 12, 60, 22)
+    assert not has_ink(image, 10, 100, 110, 150)

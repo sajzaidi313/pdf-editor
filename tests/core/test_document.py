@@ -1,4 +1,4 @@
-"""DocumentModel: opening, closing, passwords and page labels.
+"""DocumentModel: opening, closing, passwords, page labels, outline, page text.
 
 These tests go through DocumentModel only, the way the rest of the app
 does. What PyMuPDF itself does is pinned down in tests/pymupdf_behavior/.
@@ -10,7 +10,8 @@ import shutil
 
 import pytest
 
-from pdfeditor.core.document import DocumentModel, find_page_index
+from pdfeditor.core import document
+from pdfeditor.core.document import DocumentModel, OutlineEntry, find_page_index
 from pdfeditor.core.errors import EncryptedError, PdfOpenError
 
 # --- opening and closing ------------------------------------------------------
@@ -273,3 +274,86 @@ def test_find_page_index_is_plain_logic():
     assert find_page_index("b", ["a", "b"], page_count=2) == 1
     assert find_page_index("2", ["", ""], page_count=2) == 1
     assert find_page_index("x", ["", ""], page_count=2) is None
+
+
+# --- outline --------------------------------------------------------------------
+
+
+def test_outline_lists_every_entry_with_its_level_and_page(model, fixtures_dir):
+    model.open(fixtures_dir / "outline_nested.pdf")
+
+    assert model.outline() == [
+        OutlineEntry(1, "Chapter 1", 0),
+        OutlineEntry(2, "Section 1.1", 1),
+        OutlineEntry(3, "Detail 1.1.1", 2),
+        OutlineEntry(2, "Section 1.2", 3),
+        OutlineEntry(1, "Chapter 2", 4),
+        OutlineEntry(2, "Section 2.1", 5),
+        # A bookmark that points nowhere keeps its place but has no page.
+        OutlineEntry(1, "Lost bookmark", None),
+    ]
+
+
+def test_document_without_outline_gives_an_empty_list(model, fixtures_dir):
+    model.open(fixtures_dir / "simple_text.pdf")
+
+    assert model.outline() == []
+
+
+def test_outline_of_a_locked_document_is_refused(model, fixtures_dir):
+    model.open(fixtures_dir / "encrypted_user_pw.pdf")
+
+    with pytest.raises(EncryptedError):
+        model.outline()
+
+
+# --- page text --------------------------------------------------------------------
+
+
+def test_page_text_gives_the_lines_of_a_page(model, fixtures_dir):
+    model.open(fixtures_dir / "simple_text.pdf")
+
+    lines = [line.text for line in model.page_text(0).lines]
+
+    assert lines == [
+        "Lorem ipsum dolor sit amet.",
+        "The quick brown fox jumps over the lazy dog.",
+    ]
+
+
+def test_page_text_is_remembered(model, fixtures_dir):
+    model.open(fixtures_dir / "simple_text.pdf")
+
+    first_time = model.page_text(0)
+
+    # `is` asks "the very same object?", not just "an equal one?".
+    assert model.page_text(0) is first_time
+
+
+def test_only_the_most_recent_pages_are_remembered(model, fixtures_dir, monkeypatch):
+    # Pretend the limit is 2, so the test needs only three pages.
+    monkeypatch.setattr(document, "MAX_PAGES_WITH_TEXT", 2)
+    model.open(fixtures_dir / "page_labels.pdf")
+
+    oldest = model.page_text(0)
+    kept = model.page_text(1)
+    model.page_text(2)  # the third page pushes out the first
+
+    assert model.page_text(1) is kept
+    assert model.page_text(0) is not oldest
+
+
+def test_page_text_is_forgotten_when_another_file_opens(model, fixtures_dir):
+    model.open(fixtures_dir / "simple_text.pdf")
+    model.page_text(0)
+
+    model.open(fixtures_dir / "rotated_pages.pdf")
+
+    assert model.page_text(0).lines[0].text == "Rotation 0"
+
+
+def test_page_text_checks_the_page_index(model, fixtures_dir):
+    model.open(fixtures_dir / "simple_text.pdf")
+
+    with pytest.raises(IndexError):
+        model.page_text(2)

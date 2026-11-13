@@ -40,3 +40,19 @@ def render_page(page: pymupdf.Page, scale: float) -> QImage:
     # copy() gives the image its own memory. Without it the app shows
     # garbage or crashes.
     return image.copy()
+
+
+def render_thumbnail(
+    page: pymupdf.Page, max_width: int, max_height: int, device_pixel_ratio: float
+) -> QImage:
+    """Draw a small picture of `page` that fits in max_width x max_height
+    logical pixels (the pixels Qt lays widgets out in).
+
+    On a HiDPI screen the picture gets `device_pixel_ratio` times as many
+    real pixels and is told so, which makes Qt draw it at the intended
+    size but sharp.
+    """
+    scale = geometry.fit_scale(page.rect.width, page.rect.height, max_width, max_height)
+    image = render_page(page, scale * device_pixel_ratio)
+    image.setDevicePixelRatio(device_pixel_ratio)
+    return image

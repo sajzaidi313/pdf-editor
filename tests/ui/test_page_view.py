@@ -1,15 +1,19 @@
-"""PageView: layout, drawing only what is visible, zoom and navigation.
+"""PageView: layout, drawing only what is visible, zoom, navigation, overlays
+and passing mouse events on to a tool.
 
 The `view` fixture (tests/ui/conftest.py) is a shown, empty 900 x 700 view.
 page_labels.pdf has eight Letter pages, more than fit in the window.
 """
 
+import pymupdf
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QWheelEvent
 
 from pdfeditor.core import geometry
+from pdfeditor.ui.overlays import OverlayLayer
 from pdfeditor.ui.page_view import PageView, ZoomMode
+from pdfeditor.ui.tools.base import PageEvent, Tool
 
 
 @pytest.fixture
@@ -281,3 +285,257 @@ def test_navigation_without_a_document_does_nothing(view):
     view.fit_width()
 
     assert view.current_page == 0
+
+
+# --- overlays -------------------------------------------------------------------
+
+A_QUAD = pymupdf.Rect(72, 80, 172, 95).quad  # in unrotated PDF points
+
+
+def test_an_overlay_sits_on_its_page_at_the_quads_position(eight_pages):
+    eight_pages.set_overlay(OverlayLayer.SELECTION, 2, [A_QUAD])
+
+    overlay = eight_pages.overlay(OverlayLayer.SELECTION, 2)
+    # It is a child of the third page item, so it uses that page as origin.
+    assert overlay.parentItem().placement.page_index == 2
+    assert overlay.boundingRect() == QRectF(72, 80, 100, 15)
+    assert overlay.sceneBoundingRect().top() == eight_pages.placement(2).origin_y + 80
+    assert overlay.shape_count == 1
+
+
+def test_an_overlay_on_a_rotated_page_is_turned_with_it(view, model, fixtures_dir):
+    model.open(fixtures_dir / "rotated_pages.pdf")
+    view.set_document(model)
+
+    view.set_overlay(OverlayLayer.SEARCH_HITS, 1, [A_QUAD])  # the 90 degree page
+
+    # (x, y) -> (792 - y, x): the wide, flat box becomes narrow and tall.
+    area = view.overlay(OverlayLayer.SEARCH_HITS, 1).boundingRect()
+    assert (area.left(), area.top()) == pytest.approx((697, 72))
+    assert (area.width(), area.height()) == pytest.approx((15, 100))
+
+
+def test_setting_an_overlay_again_replaces_its_shapes(eight_pages):
+    eight_pages.set_overlay(OverlayLayer.SEARCH_HITS, 0, [A_QUAD])
+    first = eight_pages.overlay(OverlayLayer.SEARCH_HITS, 0)
+
+    other_quad = pymupdf.Rect(72, 200, 100, 215).quad
+    eight_pages.set_overlay(OverlayLayer.SEARCH_HITS, 0, [A_QUAD, other_quad])
+
+    assert eight_pages.overlay(OverlayLayer.SEARCH_HITS, 0) is first  # reused
+    assert first.shape_count == 2
+
+
+def test_no_quads_removes_the_overlay_of_that_page_only(eight_pages):
+    eight_pages.set_overlay(OverlayLayer.SEARCH_HITS, 0, [A_QUAD])
+    eight_pages.set_overlay(OverlayLayer.SEARCH_HITS, 3, [A_QUAD])
+
+    eight_pages.set_overlay(OverlayLayer.SEARCH_HITS, 0, [])
+
+    assert eight_pages.overlay_pages(OverlayLayer.SEARCH_HITS) == {3}
+    assert len(eight_pages.scene().items()) == 8 + 1  # the pages and one overlay
+
+
+def test_layers_are_kept_apart(eight_pages):
+    eight_pages.set_overlay(OverlayLayer.SEARCH_HITS, 0, [A_QUAD])
+    eight_pages.set_overlay(OverlayLayer.SELECTION, 0, [A_QUAD])
+
+    eight_pages.clear_overlay(OverlayLayer.SEARCH_HITS)
+
+    assert eight_pages.overlay_pages(OverlayLayer.SEARCH_HITS) == set()
+    assert eight_pages.overlay_pages(OverlayLayer.SELECTION) == {0}
+
+
+def test_the_selection_is_drawn_above_search_hits(eight_pages):
+    eight_pages.set_overlay(OverlayLayer.SEARCH_HITS, 0, [A_QUAD])
+    eight_pages.set_overlay(OverlayLayer.CURRENT_HIT, 0, [A_QUAD])
+    eight_pages.set_overlay(OverlayLayer.SELECTION, 0, [A_QUAD])
+
+    levels = [
+        eight_pages.overlay(layer, 0).zValue()
+        for layer in (
+            OverlayLayer.SEARCH_HITS,
+            OverlayLayer.CURRENT_HIT,
+            OverlayLayer.SELECTION,
+        )
+    ]
+    assert levels == sorted(levels)
+    assert len(set(levels)) == 3
+
+
+def test_overlays_go_away_with_the_document(eight_pages):
+    eight_pages.set_overlay(OverlayLayer.SELECTION, 0, [A_QUAD])
+
+    eight_pages.set_document(None)
+
+    assert eight_pages.overlay_pages(OverlayLayer.SELECTION) == set()
+
+
+# --- scrolling to a spot --------------------------------------------------------
+
+
+def test_scroll_to_brings_a_far_spot_into_view(eight_pages):
+    eight_pages.scroll_to(6, [A_QUAD])
+
+    assert eight_pages.current_page == 6
+    top = eight_pages.placement(6).origin_y + 80
+    visible = eight_pages.mapToScene(eight_pages.viewport().rect()).boundingRect()
+    assert visible.top() < top < visible.bottom()
+
+
+def test_scroll_to_leaves_the_view_alone_when_the_spot_is_visible(eight_pages):
+    before = eight_pages.verticalScrollBar().value()
+
+    eight_pages.scroll_to(0, [A_QUAD])
+
+    assert eight_pages.verticalScrollBar().value() == before
+
+
+def test_scroll_to_does_not_shift_sideways_for_a_spot_further_down(eight_pages):
+    eight_pages.set_zoom(2.0)  # now the pages are wider than the window
+    sideways = eight_pages.horizontalScrollBar()
+    sideways.setValue(sideways.minimum())  # look at the left part of the pages
+
+    eight_pages.scroll_to(6, [A_QUAD])  # near the left edge of a later page
+
+    assert eight_pages.current_page == 6
+    assert sideways.value() == sideways.minimum()
+
+
+def test_scroll_to_shifts_sideways_when_the_spot_is_out_of_sight(eight_pages):
+    eight_pages.set_zoom(2.0)
+    sideways = eight_pages.horizontalScrollBar()
+    sideways.setValue(sideways.maximum())  # look at the right part of the pages
+    assert sideways.maximum() > sideways.minimum()
+
+    eight_pages.scroll_to(0, [A_QUAD])  # at the left edge, hidden just now
+
+    assert sideways.value() < sideways.maximum()
+
+
+def test_scroll_to_ignores_nonsense(eight_pages):
+    eight_pages.scroll_to(99, [A_QUAD])
+    eight_pages.scroll_to(0, [])
+
+    assert eight_pages.current_page == 0
+
+
+# --- handing mouse events to a tool ---------------------------------------------
+
+
+class RecordingTool(Tool):
+    """A tool that only notes what it is told."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, PageEvent | None]] = []
+
+    def on_press(self, event: PageEvent) -> None:
+        self.calls.append(("press", event))
+
+    def on_move(self, event: PageEvent) -> None:
+        self.calls.append(("move", event))
+
+    def on_release(self, event: PageEvent) -> None:
+        self.calls.append(("release", event))
+
+    def reset(self) -> None:
+        self.calls.append(("reset", None))
+
+
+@pytest.fixture
+def tool(eight_pages) -> RecordingTool:
+    recording_tool = RecordingTool()
+    eight_pages.set_tool(recording_tool)
+    return recording_tool
+
+
+def pixel_of(view: PageView, page_index: int, x: float, y: float) -> QPoint:
+    """The pixel of the view that shows the PDF point (x, y) of a page."""
+    scene_x, scene_y = view.placement(page_index).pdf_to_scene(pymupdf.Point(x, y))
+    return view.mapFromScene(scene_x, scene_y)
+
+
+def test_a_press_reaches_the_tool_as_page_and_pdf_point(qtbot, eight_pages, tool):
+    spot = pixel_of(eight_pages, 0, 100, 200)
+
+    qtbot.mousePress(eight_pages.viewport(), Qt.MouseButton.LeftButton, pos=spot)
+
+    name, event = tool.calls[-1]
+    assert name == "press"
+    assert event.page_index == 0
+    # Within a pixel: the mouse position is a whole number of pixels.
+    assert (event.pdf_point.x, event.pdf_point.y) == pytest.approx((100, 200), abs=1)
+    assert event.click_count == 1
+    assert event.button == Qt.MouseButton.LeftButton
+
+
+def test_a_drag_keeps_reporting_the_page_it_began_on(qtbot, eight_pages, tool):
+    viewport = eight_pages.viewport()
+    start = pixel_of(eight_pages, 0, 100, 20)
+    qtbot.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+
+    # 15 pixels further up is above the top edge of the first page.
+    above = QPoint(start.x(), 2)
+    qtbot.mouseMove(viewport, above)
+    qtbot.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=above)
+
+    names = [name for name, _ in tool.calls]
+    assert names == ["press", "move", "release"]
+    moved = tool.calls[1][1]
+    assert moved.page_index == 0
+    assert moved.pdf_point.y < 0  # outside the page, and reported as such
+
+
+def test_a_press_beside_the_pages_resets_the_tool(qtbot, eight_pages, tool):
+    eight_pages.set_zoom(0.5)  # leaves gray space left of the pages
+
+    qtbot.mousePress(
+        eight_pages.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(3, 3)
+    )
+
+    assert tool.calls == [("reset", None)]
+
+
+def test_a_double_click_is_reported_with_click_count_two(qtbot, eight_pages, tool):
+    spot = pixel_of(eight_pages, 0, 100, 200)
+
+    qtbot.mouseDClick(eight_pages.viewport(), Qt.MouseButton.LeftButton, pos=spot)
+
+    assert tool.calls[-1][1].click_count == 2
+
+
+def test_a_press_right_after_a_double_click_counts_as_the_third(
+    qtbot, eight_pages, tool
+):
+    viewport = eight_pages.viewport()
+    spot = pixel_of(eight_pages, 0, 100, 200)
+    qtbot.mouseDClick(viewport, Qt.MouseButton.LeftButton, pos=spot)
+    qtbot.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=spot)
+
+    qtbot.mousePress(viewport, Qt.MouseButton.LeftButton, pos=spot)
+
+    assert tool.calls[-1][1].click_count == 3
+
+
+def test_the_right_button_is_not_passed_to_the_tool(qtbot, eight_pages, tool):
+    spot = pixel_of(eight_pages, 0, 100, 200)
+
+    qtbot.mouseClick(eight_pages.viewport(), Qt.MouseButton.RightButton, pos=spot)
+
+    assert tool.calls == []
+
+
+def test_a_new_document_resets_the_tool(eight_pages, tool):
+    eight_pages.set_document(None)
+
+    assert tool.calls == [("reset", None)]
+
+
+def test_clicks_without_a_tool_do_nothing(qtbot, eight_pages):
+    spot = pixel_of(eight_pages, 0, 100, 200)
+
+    qtbot.mouseClick(eight_pages.viewport(), Qt.MouseButton.LeftButton, pos=spot)
+    qtbot.mouseDClick(eight_pages.viewport(), Qt.MouseButton.LeftButton, pos=spot)
+
+    assert eight_pages.current_page == 0  # still alive and unchanged

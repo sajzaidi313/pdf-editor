@@ -159,6 +159,91 @@ def make_encrypted_user_pw(path: Path) -> None:
     doc.close()
 
 
+def make_outline_nested(path: Path) -> None:
+    """Six pages with an outline ("bookmarks") three levels deep.
+
+    Each outline entry is [level, title, page number counted from 1]. The
+    last entry has page -1: a bookmark that points nowhere, which real
+    files contain after pages were deleted.
+    """
+    doc = pymupdf.open()
+    for number in range(1, 7):
+        add_letter_page(doc, [f"Outline page {number}"])
+    doc.set_toc(
+        [
+            [1, "Chapter 1", 1],
+            [2, "Section 1.1", 2],
+            [3, "Detail 1.1.1", 3],
+            [2, "Section 1.2", 4],
+            [1, "Chapter 2", 5],
+            [2, "Section 2.1", 6],
+            [1, "Lost bookmark", -1],
+        ]
+    )
+    save_and_close(doc, path)
+
+
+def make_scanned_no_text(path: Path) -> None:
+    """One page that only holds a picture of text, like a scan.
+
+    The words are visible but there is no text in the file: nothing to
+    search, select or copy.
+    """
+    source = pymupdf.open()
+    source_page = add_letter_page(source, ["This text is only a picture."])
+    # Photograph just the strip that holds the line, in gray, at 72 dpi
+    # (one pixel per point). A picture of the whole page would make the
+    # fixture a hundred times larger.
+    strip = pymupdf.Rect(60, 70, 300, 100)
+    picture = source_page.get_pixmap(dpi=72, clip=strip, colorspace=pymupdf.csGRAY)
+    source.close()
+    doc = pymupdf.open()
+    page = doc.new_page(width=LETTER_WIDTH, height=LETTER_HEIGHT)
+    page.insert_image(strip, pixmap=picture)
+    save_and_close(doc, path)
+
+
+# The paragraph on page 1 of search_and_select.pdf. PyMuPDF wraps it into
+# four lines inside PARAGRAPH_BOX; the tests rely on these exact lines:
+#   "The quick brown fox jumps over the lazy"
+#   "dog and then the very lazy dog sleeps for"
+#   "a long while under the old oak tree near"
+#   "the river bank."
+PARAGRAPH = (
+    "The quick brown fox jumps over the lazy dog and then the very lazy dog "
+    "sleeps for a long while under the old oak tree near the river bank."
+)
+PARAGRAPH_BOX = pymupdf.Rect(72, 72, 300, 200)
+HYPHEN_BOX = pymupdf.Rect(72, 220, 300, 300)
+
+
+def make_search_and_select(path: Path) -> None:
+    """Three pages for the search and text-selection tests.
+
+    Page 1: a wrapped paragraph (one "lazy dog" is split over two lines), a
+    word hyphenated at a line end ("exam-" / "ple") and the line
+    "fox fox FOX". Page 2: two plain lines. Page 3: one line on a page
+    rotated by 90 degrees.
+
+    "lazy dog" appears 4 times (2 + 1 + 1), "fox" 4 times (all on page 1).
+    """
+    doc = pymupdf.open()
+    page = doc.new_page(width=LETTER_WIDTH, height=LETTER_HEIGHT)
+    # insert_textbox wraps the text inside the rectangle, which makes one
+    # block of several lines, like a paragraph in a real document.
+    page.insert_textbox(PARAGRAPH_BOX, PARAGRAPH, fontsize=FONT_SIZE)
+    page.insert_textbox(
+        HYPHEN_BOX, "This is an exam-\nple of hyphenation.", fontsize=FONT_SIZE
+    )
+    page.insert_text((LEFT_MARGIN, 330), "fox fox FOX", fontsize=FONT_SIZE)
+    add_letter_page(
+        doc, ["Second page: the lazy dog is back.", "Nothing else to see here."]
+    )
+    rotated = add_letter_page(doc, ["A lazy dog on a rotated page."])
+    rotated.set_rotation(90)
+    save_and_close(doc, path)
+
+
 def make_self_test(path: Path) -> None:
     """The one-page PDF that ships inside the app for `--self-test`.
 
@@ -184,6 +269,9 @@ def main() -> None:
     make_not_a_pdf(FIXTURES_DIR / "not_a_pdf.pdf")
     make_broken_xref(FIXTURES_DIR / "simple_text.pdf", FIXTURES_DIR / "broken_xref.pdf")
     make_encrypted_user_pw(FIXTURES_DIR / "encrypted_user_pw.pdf")
+    make_outline_nested(FIXTURES_DIR / "outline_nested.pdf")
+    make_scanned_no_text(FIXTURES_DIR / "scanned_no_text.pdf")
+    make_search_and_select(FIXTURES_DIR / "search_and_select.pdf")
     print(f"Wrote fixtures to {FIXTURES_DIR} and {RESOURCES_DIR}")
 
 

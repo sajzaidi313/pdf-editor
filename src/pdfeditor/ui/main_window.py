@@ -3,26 +3,36 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QSettings, QTimer
+from PySide6.QtCore import QMimeData, QSettings, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
     QDragEnterEvent,
     QDropEvent,
+    QKeyEvent,
     QKeySequence,
 )
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QWidget
 
 from pdfeditor.core.document import DocumentModel
 from pdfeditor.core.errors import PdfOpenError
+from pdfeditor.ui import clipboard
 from pdfeditor.ui.dialogs import error_dialog, password_dialog
+from pdfeditor.ui.find_bar import FindBar
+from pdfeditor.ui.find_controller import FindController
 from pdfeditor.ui.page_view import PageView
 from pdfeditor.ui.recent_files import RecentFiles
+from pdfeditor.ui.sidebar import Sidebar
 from pdfeditor.ui.toolbar import MainToolBar, page_box_text
+from pdfeditor.ui.tools.select_tool import SelectTool
 
 WINDOW_TITLE = "PDF Editor"
 MAX_PASSWORD_ATTEMPTS = 3
 MESSAGE_MILLISECONDS = 8000  # how long a passing status-bar message stays
+SIDEBAR_WIDTH = 190  # pixels; just wide enough for one column of thumbnails
+NO_TEXT_MESSAGE = (
+    "This page has no text that can be selected. It may be a scanned picture."
+)
 
 
 def status_text(page_index: int, page_count: int, zoom: float) -> str:
@@ -58,7 +68,7 @@ class MainWindow(QMainWindow):
         # is a classic Qt mistake that crashes as soon as the window is used.
         super().__init__(parent)
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(1000, 700)
+        self.resize(1200, 760)
         self.model = DocumentModel()
         # QSettings() with no arguments is the app's normal settings store.
         # Tests pass their own so they never touch the real one.
@@ -68,6 +78,7 @@ class MainWindow(QMainWindow):
         self.view = PageView(self)
         self.setCentralWidget(self.view)
         self.setAcceptDrops(True)  # allow files to be dragged onto the window
+        self._create_panels_and_tools()
         self._create_actions()
         self._create_menus()
         self._create_toolbar_and_status_bar()
@@ -78,6 +89,24 @@ class MainWindow(QMainWindow):
         self.view.setFocus()
 
     # --- building the window --------------------------------------------------
+
+    def _create_panels_and_tools(self) -> None:
+        """The sidebar, the find bar and the tool that selects text."""
+        self.sidebar = Sidebar(self)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.sidebar)
+        self.resizeDocks([self.sidebar], [SIDEBAR_WIDTH], Qt.Orientation.Horizontal)
+        self.sidebar.page_requested.connect(self.view.go_to_page)
+        self.view.current_page_changed.connect(self.sidebar.set_current_page)
+        self.find_bar = FindBar(self)
+        # Named "finder", not "find": every Qt widget already has a method
+        # called find(), and an attribute of that name would hide it.
+        self.finder = FindController(self.model, self.view, self.find_bar, self)
+        # Closing the find bar hands the keyboard back to the pages.
+        self.find_bar.closed.connect(self.view.setFocus)
+        self.select_tool = SelectTool(self.model, self.view, self)
+        self.view.set_tool(self.select_tool)
+        self.select_tool.selection_changed.connect(self._refresh_copy_action)
+        self.select_tool.page_without_text.connect(self._say_page_has_no_text)
 
     def _new_action(
         self,
@@ -116,6 +145,21 @@ class MainWindow(QMainWindow):
             "&First Page", view.first_page, "Home", "Ctrl+Home"
         )
         self.last_page_action = new("&Last Page", view.last_page, "End", "Ctrl+End")
+        self.copy_action = new("&Copy", self.copy_selection, keys.Copy)
+        self.find_action = new("&Find…", self.find_bar.open_bar, keys.Find)
+        self.find_next_action = new("Find &Next", self.finder.find_next, keys.FindNext)
+        self.find_previous_action = new(
+            "Find &Previous", self.finder.find_previous, keys.FindPrevious
+        )
+        # A dock widget brings its own show/hide action, with a check mark.
+        self.sidebar_action = self.sidebar.toggleViewAction()
+        self.sidebar_action.setText("&Sidebar")
+        self.sidebar_action.setShortcut(QKeySequence("F4"))
+        self._find_actions = [
+            self.find_action,
+            self.find_next_action,
+            self.find_previous_action,
+        ]
         self._zoom_actions = [
             self.zoom_in_action,
             self.zoom_out_action,
@@ -137,7 +181,13 @@ class MainWindow(QMainWindow):
         self._recent_menu.setToolTipsVisible(True)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
+        edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu.addAction(self.copy_action)
+        edit_menu.addSeparator()
+        edit_menu.addActions(self._find_actions)
         view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction(self.sidebar_action)
+        view_menu.addSeparator()
         view_menu.addActions(self._zoom_actions)
         view_menu.addSeparator()
         view_menu.addActions(self._page_actions)
@@ -152,6 +202,10 @@ class MainWindow(QMainWindow):
         self.toolbar = MainToolBar(self.open_action, zoom_buttons, self)
         self.addToolBar(self.toolbar)
         self.toolbar.page_box.page_entered.connect(self._go_to_typed_page)
+        # A toolbar break starts a new row: the find bar sits under the
+        # main toolbar instead of beside it.
+        self.addToolBarBreak()
+        self.addToolBar(self.find_bar)
         # A "permanent" widget sits at the right end of the status bar and
         # is not covered by passing messages.
         self._status_label = QLabel(self)
@@ -182,14 +236,14 @@ class MainWindow(QMainWindow):
         except PdfOpenError as error:
             self._report_open_error(path, error)
             return False
-        # The model has switched to the new file, so the old pages on the
-        # canvas belong to a document that no longer exists.
-        self.view.set_document(None)
+        # The model has switched to the new file, so everything that shows
+        # or searches the old pages must let go of them.
+        self._show_document(None)
         if self.model.needs_password and not self._ask_until_unlocked(path):
             self.model.close()
             self._refresh_after_document_change()
             return False
-        self.view.set_document(self.model)
+        self._show_document(self.model)
         self.recent_files.add(path)
         self._rebuild_recent_menu()
         self._refresh_after_document_change()
@@ -199,6 +253,18 @@ class MainWindow(QMainWindow):
                 MESSAGE_MILLISECONDS,
             )
         return True
+
+    def _show_document(self, model: DocumentModel | None) -> None:
+        """Point the page view, the sidebar and the search at `model`, or
+        at nothing when it is None."""
+        self.finder.clear()  # hits found in the old document mean nothing now
+        self.view.set_document(model)
+        self.sidebar.set_document(model)
+        if model is not None:
+            self.sidebar.set_current_page(self.view.current_page)
+            if self.find_bar.isVisible() and self.find_bar.text():
+                # The find bar is open: look for the same text in the new file.
+                self.finder.start(self.find_bar.text())
 
     def _ask_until_unlocked(self, path: Path) -> bool:
         """Ask for the password, three times at most. True when unlocked."""
@@ -259,9 +325,10 @@ class MainWindow(QMainWindow):
     def _refresh_after_document_change(self) -> None:
         """Update everything that depends on whether a document is shown."""
         shown = self.view.page_count > 0
-        for action in self._zoom_actions + self._page_actions:
+        for action in self._zoom_actions + self._page_actions + self._find_actions:
             action.setEnabled(shown)
         self.toolbar.page_box.setEnabled(shown)
+        self._refresh_copy_action()
         title = WINDOW_TITLE
         if shown and self.model.path is not None:
             title = f"{self.model.path.name} - {WINDOW_TITLE}"
@@ -304,7 +371,32 @@ class MainWindow(QMainWindow):
         self.view.setFocus()  # so PgUp/PgDn work again right away
         self._refresh_page_display()
 
+    # --- selecting and copying text -------------------------------------------
+
+    def copy_selection(self) -> None:
+        """Edit > Copy: put the selected text on the clipboard."""
+        if self.select_tool.has_selection:
+            clipboard.copy_text(self.select_tool.selected_text())
+
+    def _refresh_copy_action(self) -> None:
+        self.copy_action.setEnabled(self.select_tool.has_selection)
+
+    def _say_page_has_no_text(self, _page_index: int) -> None:
+        self.statusBar().showMessage(NO_TEXT_MESSAGE, MESSAGE_MILLISECONDS)
+
     # --- events Qt sends ------------------------------------------------------
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Escape closes the find bar, wherever the keyboard focus is.
+
+        A key press goes to the widget that has the focus first. If that
+        widget has no use for the key, Qt offers it to the widget around
+        it, and so on outward until it arrives here at the window.
+        """
+        if event.key() == Qt.Key.Key_Escape and self.find_bar.isVisible():
+            self.find_bar.close_bar()
+            return
+        super().keyPressEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Something is being dragged over the window: say whether we take it."""
@@ -324,6 +416,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """The window is closing: let go of the file."""
-        self.view.set_document(None)
+        self._show_document(None)
         self.model.close()
         super().closeEvent(event)

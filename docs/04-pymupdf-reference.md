@@ -30,6 +30,8 @@ doc.close()                               # a second close() raises ValueError
 ✅ Verified in 2.1, each with a test in `tests/pymupdf_behavior/`:
 - Wrong `authenticate()` attempts *before* the right one do no harm, so a retry prompt can reuse one open `Document`. (`test_passwords.py::test_wrong_attempts_before_the_right_one_do_no_harm`)
 - `authenticate()` returns 0 for a wrong password and a positive number for a right one; on an unprotected file it also returns a positive number. (`test_passwords.py::test_authenticate_returns_zero_when_wrong_and_positive_when_right`, `::test_authenticate_on_unprotected_file_reports_success`)
+- `doc.get_toc()` (the same as `simple=True`) returns rows `[level, title, page counted from 1]`, and `[]` when the file has no outline. (`test_outline.py::test_get_toc_rows_are_level_title_and_page_counted_from_one`, `::test_document_without_outline_gives_an_empty_list`)
+- A bookmark without a target has page `-1`, and deleting a page turns the bookmarks that pointed to it into such entries. (`test_outline.py::test_a_bookmark_without_target_has_page_minus_one`, `::test_deleting_a_page_leaves_its_bookmark_pointing_nowhere`)
 - A locked document answers `page_count`, but loading a page raises `ValueError("document closed or encrypted")`. (`test_passwords.py::test_locked_document_counts_pages_but_will_not_load_them`)
 - **The file extension proves nothing.** MuPDF looks at the content: an HTML page or an image saved as `x.pdf` opens *without an error* as a 1-page document with `is_pdf == False`. Check `is_pdf` after every open. Content MuPDF recognizes as nothing at all (plain text, random bytes) raises `FileDataError`. (`test_open.py::test_html_saved_as_pdf_opens_but_is_not_a_pdf`, `::test_image_saved_as_pdf_opens_but_is_not_a_pdf`, `::test_garbage_file_raises_file_data_error`)
 - A file whose `startxref` number is wrong still opens, with `is_repaired == True`. (`test_open.py::test_wrong_startxref_is_repaired_on_open`)
@@ -90,6 +92,20 @@ page.search_for("needle", quads=True, textpage=tp)   # list of Quad (case-insens
 - `flags` bits: 1 superscript, 2 italic, 4 serif, 8 monospace, 16 bold.
 - Search is case-insensitive, doesn't support regex. For regex: extract `words`/`rawdict`, regex over the joined text, map char indices back to char bboxes.
 - Hyphenated line breaks and ligatures (ﬁ) affect matching; flags `pymupdf.TEXT_DEHYPHENATE`, `TEXT_PRESERVE_LIGATURES` control this.
+
+⚠️ ✅ **`search_for` returns line pieces, not matches.** A match that starts at the end of one line and ends on the next comes back as two quads, and nothing in the result says they belong together. On page 1 of `search_and_select.pdf`, "lazy dog" occurs twice but `search_for` returns three quads (`test_search.py::test_search_for_returns_line_pieces_not_matches`). A "3 of 17" counter cannot be built on that, so **the app does not use `search_for`**: `core/search.py` searches the characters that `core/text.py` read with `rawdict` (decision in doc 11, 2026-11-13). Our search copies these `search_for` habits, each pinned by a test in `test_search.py`: upper/lower case is ignored (`::test_search_for_ignores_case`), a word hyphenated at a line end is found whole and its hyphen cannot be searched for (`::test_search_for_joins_a_word_hyphenated_at_a_line_end`), runs of spaces count as one (`::test_search_for_treats_runs_of_spaces_as_one`).
+
+✅ `rawdict`, verified in 2.1 with tests in `tests/pymupdf_behavior/test_text_extraction.py`:
+- Shape: `blocks` → `lines` → `spans` → `chars`; a char is `{"c": one character, "bbox": (x0, y0, x1, y1), "origin", "synthetic"}`; a line has `bbox`, `dir`, `wmode`; a block has `type` (0 text, 1 image), `number`, `bbox`. (`::test_rawdict_nests_blocks_lines_spans_and_characters`)
+- Spaces are characters with a box of their own. (`::test_spaces_are_characters_with_a_box_too`)
+- Character boxes are unrotated and measured from the CropBox corner, like `search_for` rects. (`::test_character_boxes_stay_unrotated`, `::test_character_boxes_are_measured_from_the_cropbox_corner`)
+- The lines of one wrapped paragraph share a block; every separate `insert_text` call makes its own block. (`::test_lines_of_a_wrapped_paragraph_share_one_block`)
+- A line's `dir` is `(1.0, 0.0)` for ordinary text and `(0.0, -1.0)` for text written bottom to top; character boxes of sideways text are still upright rectangles. (`::test_line_direction_is_1_0_for_ordinary_text_and_differs_for_sideways_text`)
+- A scanned page gives one image block; with `TEXT_PRESERVE_IMAGES` switched off it gives no blocks at all. (`::test_a_scanned_page_has_an_image_block_unless_images_are_switched_off`)
+- The default flags `TEXTFLAGS_RAWDICT` include `TEXT_PRESERVE_LIGATURES` and `TEXT_PRESERVE_IMAGES`. The app reads text with both switched off (`core.text.EXTRACT_FLAGS`). (`::test_the_default_rawdict_flags_keep_ligatures_and_images`)
+- **Not verified:** that a ligature glyph (ﬁ) really comes back as "f" + "i" with the flag off. The base-14 fonts cannot write a ligature, so no fixture has one; this needs a PDF made with another font.
+- `get_text()` is typed as "string, list or dict"; use `core.text.read_rawdict()` so the type checker knows it is a dict.
+- Speed on a full page of text (about 4,000 characters): `rawdict` 8 ms, `search_for` 4 ms (measured 2026-11-13).
 - OCR (optional, needs Tesseract installed): `tp = page.get_textpage_ocr(language="eng", dpi=300, full=False)`.
 
 ## 5. Annotations

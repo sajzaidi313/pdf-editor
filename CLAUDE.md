@@ -4,11 +4,11 @@ Read this file at the start of every session. It is the entry point. Detailed co
 
 ## Current status (update at the end of every session)
 
-- **Milestone:** M0 and M1 (open & render) done; M2 (thumbnails, search, text selection & copy) not started
-- **Done so far:** M0; M1: `DocumentModel` open/close/passwords/page labels, `core/geometry.py`, synchronous `PageView`, zoom, page navigation, Open/Recent/drag-drop/password prompt, `--self-test`, PyInstaller spec; CI green, including the packaged self-test on Windows/macOS/Linux
-- **Next step:** start M2 from `docs/10-build-plan.md`
-- **Known issues / open questions:** cancelling the password prompt leaves an empty window (the locked file has already replaced the open one; revisit in M4). No log file yet and no placeholder for a page that fails to render (doc 11, 2026-11-12)
-- **Last updated:** 2026-11-12
+- **Milestone:** M0 and M1 done; M2 (thumbnails, search, text selection & copy) built and green locally, waiting for its first CI run
+- **Done so far:** M0; M1 (open, render, zoom, navigation, packaging, CI); M2: sidebar with thumbnails and outline, find bar with page-by-page search, `core/text.py` + `core/search.py`, `SelectTool` (drag, double- and triple-click), Copy, overlays
+- **Next step:** push and check that CI is green on all three systems (the mouse-driven GUI tests have only run on Windows); then start M3 from `docs/10-build-plan.md`
+- **Known issues / open questions:** cancelling the password prompt leaves an empty window (revisit in M4). No log file, no placeholder for a page that fails to render. M2 limits (doc 11, 2026-11-13): selection stays on one page, search and thumbnails run on the UI thread in small pieces until M3, ligature handling is unproven
+- **Last updated:** 2026-11-13
 
 ## What we are building
 
@@ -73,7 +73,8 @@ pdf-editor/
 │   │   ├── forms.py
 │   │   ├── redaction.py
 │   │   ├── text_edit.py
-│   │   ├── search.py
+│   │   ├── text.py            ← PageText: a page's characters and their boxes; hit-testing, selection ranges (docs/05 §8)
+│   │   ├── search.py          ← find_in_page() over PageText, SearchResults (not page.search_for; docs/04 §4)
 │   │   ├── links.py           ← is_safe_link() and link helpers (docs/05 §9)
 │   │   └── save.py
 │   ├── render/
@@ -84,13 +85,17 @@ pdf-editor/
 │   │   ├── main_window.py
 │   │   ├── commands_qt.py     ← QtCommand: wraps a core Command in a QUndoCommand
 │   │   ├── doc_signals.py     ← re-emits DocumentModel callbacks as Qt signals
-│   │   ├── page_view.py       ← QGraphicsView canvas
+│   │   ├── page_view.py       ← QGraphicsView canvas; passes mouse events to the active tool, shows overlays
 │   │   ├── page_item.py       ← one QGraphicsItem per page
+│   │   ├── overlays.py        ← QuadOverlay + OverlayLayer: search hits and the text selection, drawn on top of a page
 │   │   ├── recent_files.py    ← Open Recent list, stored with QSettings
-│   │   ├── thumbnails.py
-│   │   ├── sidebar.py         ← outline, annotations list, search results
+│   │   ├── thumbnails.py      ← ThumbnailModel / ThumbnailView / ThumbnailDelegate (model/view, docs/05 §10)
+│   │   ├── sidebar.py         ← the dock with the thumbnails and the outline; later annotations list, search results
+│   │   ├── find_bar.py        ← the find bar (Ctrl+F): text box, Previous/Next, "3 of 17"
+│   │   ├── find_controller.py ← FindController: searches page by page, steps through the hits
+│   │   ├── clipboard.py       ← copy_text() (a plain function, so tests can replace it)
 │   │   ├── toolbar.py         ← main toolbar and the go-to-page box
-│   │   ├── tools/             ← one class per interaction tool (select, highlight, ink, …)
+│   │   ├── tools/             ← base.py (Tool, PageEvent) and one class per interaction tool (select_tool.py; later highlight, ink, …)
 │   │   └── dialogs/           ← error_dialog.py, password_dialog.py (plain functions, so tests can replace them)
 │   └── resources/             ← self_test.pdf; later icons, .qss stylesheet, fonts/ (+ their license texts)
 └── tests/

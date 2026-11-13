@@ -53,10 +53,12 @@ Permissive escape hatch (if ever needed): rendering with **pypdfium2** (Apache-2
 - Deleting all pages → disallow (PDF must have ≥ 1 page).
 
 ### Text
-- No text layer (scans) → selection/highlight disabled with hint "No selectable text; run OCR (if available) or use a rectangle".
+- No text layer (scans) → selection/highlight disabled with hint "No selectable text; run OCR (if available) or use a rectangle". (M2: trying to select on such a page shows "This page has no text that can be selected. It may be a scanned picture." in the status bar; the OCR and rectangle hints come with those features.)
 - Text in Type 3 fonts or without ToUnicode → extraction garbage → search fails; nothing to do except OCR.
 - RTL (Arabic/Hebrew) and vertical CJK → extraction order may be odd; selection imperfect; document as known limitation.
-- Ligatures (ﬁ, ﬂ) → search for "fi" may miss; consider `TEXT_PRESERVE_LIGATURES` off (default expands them).
+- Ligatures (ﬁ, ﬂ) → search for "fi" may miss; consider `TEXT_PRESERVE_LIGATURES` off (default expands them). (M2: the app reads text with that flag off, `core.text.EXTRACT_FLAGS`. Not yet proven on a real ligature: no fixture has one, doc 04 §4.)
+- A word hyphenated at a line end ("exam-" / "ple") is found as "example"; the price is that "exam-" with its hyphen is not found, and a genuinely hyphenated word broken at its hyphen ("well-" / "known") is found as "wellknown" but not as "well-known". Same behavior as MuPDF's own search.
+- Copying text is not blocked by a "no copy" permission flag (doc 03 §9: respecting permissions is a policy choice, and M1 left the restrictions banner for M4). Decide together with that banner.
 - Invisible text (render mode 3, e.g. OCR layers) → selectable but not visible; redaction must also remove it (`PDF_REDACT_TEXT_REMOVE` handles all; `scrub(hidden_text=True)` for the rest).
 
 ### Annotations

@@ -85,10 +85,26 @@ class PagePlacement:
         # Multiplying a Point by a Matrix applies the matrix to the point.
         return shown * self.derotation_matrix
 
+    def pdf_to_page(self, point: pymupdf.Point) -> tuple[float, float]:
+        """Unrotated PDF point -> point on the page as displayed, measured
+        from the displayed page's own top-left corner."""
+        shown = point * self.rotation_matrix
+        return shown.x, shown.y
+
     def pdf_to_scene(self, point: pymupdf.Point) -> tuple[float, float]:
         """Unrotated PDF point -> scene point."""
-        shown = point * self.rotation_matrix
-        return shown.x + self.origin_x, shown.y + self.origin_y
+        x, y = self.pdf_to_page(point)
+        return x + self.origin_x, y + self.origin_y
+
+    def quad_on_page(self, quad: pymupdf.Quad) -> list[tuple[float, float]]:
+        """The corners of an unrotated quad on the page as displayed.
+
+        They are listed going around the outline (upper-left, upper-right,
+        lower-right, lower-left), so that joining them in order draws the
+        shape. On a rotated page the result is rotated with it.
+        """
+        corners = (quad.ul, quad.ur, quad.lr, quad.ll)
+        return [self.pdf_to_page(corner) for corner in corners]
 
 
 def layout_pages(
@@ -151,6 +167,22 @@ def visible_pages(
     # ...up to, but not including, the first page that starts below the strip.
     end = bisect.bisect_left(placements, bottom, key=lambda p: p.origin_y)
     return range(first, max(first, end))
+
+
+def page_at(placements: Sequence[PagePlacement], x: float, y: float) -> int | None:
+    """Index of the page that covers the scene point (x, y), or None when
+    the point is in a gap between pages or beside them."""
+    # The first page whose bottom edge lies below the point is the only
+    # one that can contain it.
+    index = bisect.bisect_right(placements, y, key=lambda p: p.bottom)
+    if index == len(placements):
+        return None
+    placement = placements[index]
+    inside = (
+        placement.origin_y <= y
+        and placement.origin_x <= x <= placement.origin_x + placement.width
+    )
+    return index if inside else None
 
 
 def most_visible_page(
@@ -242,6 +274,17 @@ def render_scale(
     if longest_side * wanted > MAX_RENDER_PIXELS:
         return MAX_RENDER_PIXELS / longest_side
     return wanted
+
+
+def fit_scale(
+    width: float, height: float, max_width: float, max_height: float
+) -> float:
+    """The largest scale at which a width x height page fits inside a box
+    of max_width x max_height. Used for thumbnails: an ordinary page is
+    limited by the box's width, a very tall one by its height."""
+    if width <= 0 or height <= 0:
+        return 1.0
+    return min(max_width / width, max_height / height)
 
 
 def render_matrix(scale: float) -> pymupdf.Matrix:

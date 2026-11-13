@@ -9,19 +9,39 @@ this class replaces them with sharp ones.
 
 For now pages are drawn right here on the UI thread, and only the pages
 that are visible. Milestone M3 moves the drawing to a separate process.
+
+The view also passes mouse clicks and drags on to the active tool (see
+tools/base.py) and shows overlays such as search hits (see overlays.py).
 """
 
+import time
+from collections.abc import Sequence
 from enum import Enum
 
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QResizeEvent, QTransform, QWheelEvent
-from PySide6.QtWidgets import QFrame, QGraphicsScene, QGraphicsView, QWidget
+import pymupdf
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QMouseEvent,
+    QResizeEvent,
+    QTransform,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsScene,
+    QGraphicsView,
+    QWidget,
+)
 
 from pdfeditor.core import geometry
 from pdfeditor.core.document import DocumentModel
 from pdfeditor.core.geometry import PagePlacement
 from pdfeditor.render.renderer import render_page
+from pdfeditor.ui.overlays import OverlayLayer, QuadOverlay
 from pdfeditor.ui.page_item import PageItem
+from pdfeditor.ui.tools.base import PageEvent, Tool
 
 BACKGROUND_COLOR = "#525659"  # the gray most PDF viewers use around pages
 
@@ -37,6 +57,10 @@ WHEEL_NOTCH = 120
 # A fit mode leaves this many pixels spare so that rounding can never make
 # a scroll bar appear and disappear in turns.
 FIT_SLACK_PIXELS = 2
+
+# A third click counts as a triple-click when it lands this close, in
+# pixels, to the double-click before it.
+TRIPLE_CLICK_DISTANCE = 6
 
 
 class ZoomMode(Enum):
@@ -69,6 +93,14 @@ class PageView(QGraphicsView):
         self._zoom_mode = ZoomMode.CUSTOM
         self._current_page = 0
         self._wheel_units = 0  # wheel movement not yet turned into a zoom step
+        # The overlays of each layer, by page index (see set_overlay).
+        self._overlays: dict[OverlayLayer, dict[int, QuadOverlay]] = {
+            layer: {} for layer in OverlayLayer
+        }
+        self._tool: Tool | None = None  # what gets the mouse clicks and drags
+        self._pressed_page: int | None = None  # page of the drag in progress
+        self._double_click_time = 0.0  # when and where the last double-click was
+        self._double_click_spot = QPointF()
         self._configure_view()
         # A single-shot timer calls its function once, some time after
         # start(). Calling start() again before it fires restarts the wait.
@@ -91,6 +123,11 @@ class PageView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         # Dropped files are handled by the main window, not by the canvas.
         self.setAcceptDrops(False)
+        # Normally a widget hears about mouse movement only while a button
+        # is held. Mouse tracking reports every movement, which the I-beam
+        # cursor over text needs. In a QGraphicsView the mouse events
+        # arrive at the inner "viewport" widget, so it is switched on there.
+        self.viewport().setMouseTracking(True)
 
     # --- showing a document ---------------------------------------------------
 
@@ -105,7 +142,11 @@ class PageView(QGraphicsView):
         file in it.
         """
         self._render_timer.stop()
-        self._scene.clear()  # removes and deletes every item
+        if self._tool is not None:
+            self._tool.reset()  # a selection belongs to the old document
+        self._pressed_page = None
+        self._scene.clear()  # removes and deletes every item, overlays included
+        self._overlays = {layer: {} for layer in OverlayLayer}
         self._items = []
         self._pages_with_image = set()
         self._model = model
@@ -131,6 +172,10 @@ class PageView(QGraphicsView):
     @property
     def page_count(self) -> int:
         return len(self._placements)
+
+    def placement(self, page_index: int) -> PagePlacement:
+        """Where the page at `page_index` sits in the scene."""
+        return self._placements[page_index]
 
     def rendered_pages(self) -> set[int]:
         """Indexes of the pages that currently hold a picture."""
@@ -299,10 +344,166 @@ class PageView(QGraphicsView):
             self._current_page = page
             self.current_page_changed.emit(page)
 
+    def scroll_to(self, page_index: int, quads: Sequence[pymupdf.Quad]) -> None:
+        """Bring an area of a page into view (a search hit, say).
+
+        `quads` are in unrotated PDF points on that page. When all of them
+        can already be seen, nothing moves. Otherwise they are centered,
+        but only in the direction in which they were out of sight: a hit
+        further down the document does not shift the view sideways.
+        """
+        if not quads or not 0 <= page_index < len(self._placements):
+            return
+        placement = self._placements[page_index]
+        corners = [corner for quad in quads for corner in placement.quad_on_page(quad)]
+        left = min(x for x, _ in corners) + placement.origin_x
+        top = min(y for _, y in corners) + placement.origin_y
+        right = max(x for x, _ in corners) + placement.origin_x
+        bottom = max(y for _, y in corners) + placement.origin_y
+        visible = self._visible_scene_rect()
+        target = visible.center()  # where the middle of the window is now
+        if left < visible.left() or right > visible.right():
+            target.setX((left + right) / 2)
+        if top < visible.top() or bottom > visible.bottom():
+            target.setY((top + bottom) / 2)
+        if target != visible.center():
+            self.centerOn(target)
+
+    # --- overlays -------------------------------------------------------------
+
+    def set_overlay(
+        self, layer: OverlayLayer, page_index: int, quads: Sequence[pymupdf.Quad]
+    ) -> None:
+        """Show `quads` on a page in the given layer, replacing what that
+        layer showed on that page before. No quads: remove it.
+
+        `quads` are in unrotated PDF points, as core hands them out; the
+        page's placement turns them into the displayed orientation.
+        """
+        overlays = self._overlays[layer]
+        overlay = overlays.get(page_index)
+        if not quads:
+            if overlay is not None:
+                self._scene.removeItem(overlay)
+                del overlays[page_index]
+            return
+        if overlay is None:
+            overlay = QuadOverlay(layer, self._items[page_index])
+            overlays[page_index] = overlay
+        placement = self._placements[page_index]
+        overlay.set_outlines([placement.quad_on_page(quad) for quad in quads])
+
+    def clear_overlay(self, layer: OverlayLayer) -> None:
+        """Remove a layer's overlays from every page."""
+        for overlay in self._overlays[layer].values():
+            self._scene.removeItem(overlay)
+        self._overlays[layer].clear()
+
+    def overlay(self, layer: OverlayLayer, page_index: int) -> QuadOverlay | None:
+        """The overlay a layer shows on a page, if any (used by the tests)."""
+        return self._overlays[layer].get(page_index)
+
+    def overlay_pages(self, layer: OverlayLayer) -> set[int]:
+        """The pages on which a layer shows something."""
+        return set(self._overlays[layer])
+
+    # --- tools ----------------------------------------------------------------
+
+    def set_tool(self, tool: Tool | None) -> None:
+        """Choose what receives mouse clicks and drags on the pages."""
+        if self._tool is not None:
+            self._tool.reset()
+        self._tool = tool
+        self._pressed_page = None
+
+    def _page_event(
+        self, event: QMouseEvent, page_index: int | None, click_count: int = 1
+    ) -> PageEvent | None:
+        """Translate a mouse event into "where on which page".
+
+        With page_index None the page under the pointer is used, and the
+        result is None when there is none. A drag passes the page it began
+        on, so the point may then lie outside that page.
+        """
+        scene_point = self.mapToScene(event.position().toPoint())
+        if page_index is None:
+            page_index = geometry.page_at(
+                self._placements, scene_point.x(), scene_point.y()
+            )
+            if page_index is None:
+                return None
+        placement = self._placements[page_index]
+        pdf_point = placement.scene_to_pdf(scene_point.x(), scene_point.y())
+        return PageEvent(
+            page_index, pdf_point, event.modifiers(), event.button(), click_count
+        )
+
+    def _press(self, event: QMouseEvent, click_count: int) -> None:
+        """A left press, double-click or triple-click: tell the tool."""
+        if self._tool is None:
+            return
+        page_event = self._page_event(event, None, click_count)
+        if page_event is None:
+            self._tool.reset()  # a click beside the pages
+            return
+        self._pressed_page = page_event.page_index
+        self._tool.on_press(page_event)
+
+    def _is_third_click(self, event: QMouseEvent) -> bool:
+        """True when this press follows a double-click quickly and nearby.
+
+        Qt reports single and double clicks but has no triple-click, so
+        the view notes when and where each double-click happened.
+        """
+        seconds_since = time.monotonic() - self._double_click_time
+        distance = (event.position() - self._double_click_spot).manhattanLength()
+        in_time = seconds_since * 1000 <= QApplication.doubleClickInterval()
+        return in_time and distance <= TRIPLE_CLICK_DISTANCE
+
     # --- events Qt sends ------------------------------------------------------
     # Qt calls these camelCase methods when something happens to the
     # widget. Overriding one means: "do this instead of, or on top of, the
     # default behavior".
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._press(event, 3 if self._is_third_click(event) else 1)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """Qt sends this instead of the second press of a double-click."""
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mouseDoubleClickEvent(event)
+            return
+        self._double_click_time = time.monotonic()
+        self._double_click_spot = event.position()
+        self._press(event, 2)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._tool is None:
+            super().mouseMoveEvent(event)
+            return
+        if self._pressed_page is not None:  # a drag is in progress
+            page_event = self._page_event(event, self._pressed_page)
+            if page_event is not None:
+                self._tool.on_move(page_event)
+            return
+        hover = self._page_event(event, None)
+        if hover is None:
+            self.viewport().unsetCursor()  # back to the ordinary arrow
+        else:
+            self.viewport().setCursor(self._tool.cursor_at(hover))
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._tool is None or self._pressed_page is None:
+            super().mouseReleaseEvent(event)
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            page_event = self._page_event(event, self._pressed_page)
+            self._pressed_page = None
+            if page_event is not None:
+                self._tool.on_release(page_event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Ctrl + wheel zooms around the mouse pointer; a plain wheel scrolls."""

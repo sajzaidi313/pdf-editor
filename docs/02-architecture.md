@@ -76,6 +76,10 @@ class DocumentModel:
     def authenticate(self, password: str) -> bool: ...   # False = wrong password (a status, not an exception)
     def page_label(self, index: int) -> str: ...         # "iv", or "" without labels
     def find_page(self, text: str) -> int | None: ...    # page box input → index: label first, then page number
+
+    # reading (built in M2)
+    def outline(self) -> list[OutlineEntry]: ...         # flat list of (level, title, page_index or None)
+    def page_text(self, index: int, remember: bool = True) -> PageText: ...   # characters + boxes; last 8 pages cached (doc 05 §8)
     @property
     def is_dirty(self) -> bool: ...       # undo stack clean index + unsaved_outside_history flag, see doc 07 §6
 
@@ -124,6 +128,23 @@ Annotations made by other apps may have no `/NM`, or a non-unique one. Hit-testi
 
 Form widgets are different: they're never deleted and recreated by our commands, so `(page_index, xref)` is fine for them.
 
+**Text and search (built in M2).** `core/text.py` and `core/search.py` are the first two feature modules, and they only read:
+
+```python
+# core/text.py: everything about "which characters, and where"
+def extract_page_text(page: pymupdf.Page) -> PageText: ...           # lines, one box per character
+def offset_at(page_text, point) -> int | None: ...                    # point → position in the text
+def word_range_at(page_text, point) -> tuple[int, int] | None: ...    # double-click
+def line_range_at(page_text, point) -> tuple[int, int] | None: ...    # triple-click
+def text_in_range(page_text, start, end) -> str: ...                  # copy
+def quads_in_range(page_text, start, end) -> list[pymupdf.Quad]: ...  # what to highlight (reused by A1 in M5)
+
+# core/search.py: built on PageText, not on page.search_for (doc 04 §4)
+def find_in_page(page_text, needle, page_index) -> list[SearchHit]: ...
+class SearchResults: ...                                              # hits in document order; next/previous
+```
+A position in the text is an *offset* (characters before it, counted over the page); a selection or a hit is a range of offsets. Details: doc 05 §8.
+
 ### 2.3 Geometry (`core/geometry.py`)
 
 The only place that knows about page offsets, rotation, zoom and device pixel ratio. Pure math, no Qt.
@@ -147,6 +168,12 @@ class PagePlacement:
     def pdf_to_scene(self, p: pymupdf.Point) -> tuple[float, float]:
         shown = p * self.rotation_matrix
         return shown.x + self.origin_x, shown.y + self.origin_y
+
+    def quad_on_page(self, quad: pymupdf.Quad) -> list[tuple[float, float]]:
+        ...                                   # the quad's corners on the displayed page, for overlays (M2)
+
+def page_at(placements, x: float, y: float) -> int | None:
+    ...                                       # which page is under a scene point (mouse events, M2)
 
 def view_scale(zoom: float, logical_dpi: float) -> float:
     return zoom * logical_dpi / 72        # screen pixels per point; zoom 1.0 = 100% = real paper size (doc 05 §7)
@@ -204,7 +231,7 @@ Full details: doc 05.
 - `PageView(QGraphicsView)` holds a `QGraphicsScene`. Pages are stacked vertically with a fixed gap (e.g. 12 pt, in scene units) and centered.
 - **Scene units are PDF points in displayed (rotated) orientation**; zoom is applied with the view transform (`view.setTransform(QTransform.fromScale(z, z))`). This is the decision from doc 05 §1; don't mix in the alternative.
 - `PageItem(QGraphicsItem)` paints the cached image for its page (scaled to its point-size rect), or a placeholder (white rect + spinner) while rendering. It knows its page index and its size in scene units (= `page.rect` width/height).
-- Overlays (selection rectangles, handles, search hit highlights, in-progress ink strokes) are **child items** of the `PageItem`, so they move with the page.
+- Overlays (selection rectangles, handles, search hit highlights, in-progress ink strokes) are **child items** of the `PageItem`, so they move with the page. Since M2: `PageView.set_overlay(layer, page_index, quads)` / `clear_overlay(layer)` with the layers `SEARCH_HITS`, `CURRENT_HIT` and `SELECTION` (`ui/overlays.py`). Callers pass quads in unrotated PDF points; the view converts them with `PagePlacement.quad_on_page`.
 - Annotations are **rendered into the page image** by MuPDF (`annots=True`) *except* the one currently being edited, which is hidden from the render (set it to hidden temporarily, or render with `annots=False` and draw annots as items; see doc 05 §6 for the trade-off).
 
 ### 5.2 Tools (state pattern)
@@ -227,13 +254,20 @@ class PageEvent:
 ```
 `PageView` converts every mouse event into a `PageEvent` (hit-testing which page is under the cursor) and forwards it to `ToolController.active_tool`. Tools never deal with scene coordinates. They produce `Command`s and push them.
 
+**What exists since M2** (the rest of the sketch above arrives with the annotation tools in M5):
+- `Tool` is a `QObject` (so tools can have signals) with `on_press`, `on_move`, `on_release`, `reset()` (the document changed, or a click beside the pages) and `cursor_at(event)` (the pointer to show on hover). No `on_key`, `activate`, `deactivate` yet.
+- `PageEvent` is frozen and has one more field, `click_count` (2 = double-click, 3 = triple-click). During a drag, `page_index` stays the page the press was on and `pdf_point` may lie outside that page.
+- There is no `ToolController` yet: `PageView.set_tool(tool)` holds the one tool, `SelectTool` (text selection only; annotation selection comes in M5). No `HandTool`.
+
 Tool list: `SelectTool` (text select + annotation select/move/resize), `HandTool`, `HighlightTool` (also underline/strike), `NoteTool`, `FreeTextTool`, `ShapeTool(kind)`, `InkTool`, `RedactTool`, `TextAddTool`, `ImageTool`, `SignatureTool`, `TextEditTool`, `FormFillTool` (default when clicking a widget).
 
 ### 5.3 Panels
-- Thumbnails: `QListView` + custom model; renders at low zoom via the same scheduler with low priority. Supports drag-reorder (`InternalMove`) → emits `MovePagesCommand`.
-- Outline: `QTreeView` from `doc.get_toc(simple=False)`.
+- The sidebar is a `QDockWidget` (`ui/sidebar.py`) with one tab per panel; View > Sidebar (F4) shows and hides it.
+- Thumbnails: `QListView` + custom model; renders at low zoom via the same scheduler with low priority. Supports drag-reorder (`InternalMove`) → emits `MovePagesCommand`. *M2 state:* `ui/thumbnails.py` draws the visible thumbnails itself, one per turn of the event loop; click to navigate only (doc 05 §10).
+- Outline: `QTreeView` over a `QStandardItemModel`, filled from `model.outline()` (which reads `doc.get_toc()`). A click goes to the top of the target page; a bookmark without a target is shown disabled.
 - Annotations list: model rebuilt on `DocChange(kind="annots")`.
-- Search: results list; runs in the background process (not a thread); streams results page by page.
+- Search: results list; runs in the background process (not a thread); streams results page by page. *M2 state:* no results list yet. A find bar (`ui/find_bar.py`, Ctrl+F) and a `FindController` (`ui/find_controller.py`) that searches one page per turn of the event loop, starting at the current page, and marks hits as overlays. The search moves into the background process in M3.
+- Copy goes through `ui/clipboard.py`, a one-function file, so tests can replace it.
 - Properties: shows editable props for the current selection; edits produce `ModifyAnnotCommand` (merged via `QUndoCommand.mergeWith` for slider drags).
 
 ## 6. Data flow examples
