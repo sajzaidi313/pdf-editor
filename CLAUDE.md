@@ -4,9 +4,9 @@ Read this file at the start of every session. It is the entry point. Detailed co
 
 ## Current status (update at the end of every session)
 
-- **Milestone:** M0 done; M1 (open & render) built and green locally, waiting for its first CI run (the new `package` job)
-- **Done so far:** M0; M1: `DocumentModel` open/close/passwords/page labels, `core/geometry.py`, synchronous `PageView`, zoom, page navigation, Open/Recent/drag-drop/password prompt, `--self-test`, PyInstaller spec, CI package job
-- **Next step:** push and check that CI is green, including `Package` on all three systems; then start M2 from `docs/10-build-plan.md`
+- **Milestone:** M0 and M1 (open & render) done; M2 (thumbnails, search, text selection & copy) not started
+- **Done so far:** M0; M1: `DocumentModel` open/close/passwords/page labels, `core/geometry.py`, synchronous `PageView`, zoom, page navigation, Open/Recent/drag-drop/password prompt, `--self-test`, PyInstaller spec; CI green, including the packaged self-test on Windows/macOS/Linux
+- **Next step:** start M2 from `docs/10-build-plan.md`
 - **Known issues / open questions:** cancelling the password prompt leaves an empty window (the locked file has already replaced the open one; revisit in M4). No log file yet and no placeholder for a page that fails to render (doc 11, 2026-11-12)
 - **Last updated:** 2026-11-12
 
