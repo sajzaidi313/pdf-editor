@@ -1,0 +1,80 @@
+# pyproject.toml: the one settings file for this project.
+# pip reads it to learn the project's name and which libraries it needs.
+# ruff, pyright and pytest each read their own [tool.*] section from it too.
+
+# --- How pip installs this project ------------------------------------------
+# The "build backend" is the tool pip calls to install our code.
+# setuptools is the long-standing default choice.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfeditor"
+version = "0.1.0"
+description = "A desktop PDF editor written in Python with PySide6 and PyMuPDF."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"     # AGPL because PyMuPDF is AGPL, see docs/09 §2
+authors = [{ name = "Jafer" }]
+
+# Libraries the app needs to run. The version ranges are deliberate "pins":
+# an upgrade only happens when we change these lines on purpose.
+dependencies = [
+    "PySide6>=6.12,<6.13",
+    "pymupdf>=2.1,<2.2",
+]
+
+# Extra libraries needed only while developing (tests, lint, type check).
+# Installed with:  pip install -e ".[dev]"
+[project.optional-dependencies]
+dev = [
+    "pytest",             # test runner
+    "pytest-qt",          # lets pytest create and drive Qt windows
+    "ruff",               # linter + formatter
+    "pyright[nodejs]",    # type checker; [nodejs] bundles the Node.js it runs on
+    "pypdf",              # a second PDF library, used in tests as a second opinion
+]
+
+# Our code lives in src/, so tell setuptools to look there for packages.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# --- ruff: linter and formatter ---------------------------------------------
+# Each code switches on a family of checks:
+#   E, F     style errors and real bugs (unused imports, undefined names)
+#   I        import order
+#   B        common bug patterns
+#   UP       suggests modern Python syntax
+#   ANN      missing type hints
+#   C901     a function has too many branches
+#   PLR0915  a function has too many statements
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ANN", "C901", "PLR0915"]
+ignore = ["ANN401"]                      # allow `Any` where it's genuinely needed
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]                     # no type hints required in tests
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10                      # too many branches → split the function
+
+[tool.ruff.lint.pylint]
+max-statements = 30                      # roughly the "~40 lines" rule
+
+# --- pyright: type checker --------------------------------------------------
+[tool.pyright]
+typeCheckingMode = "basic"
+include = ["src", "tests"]
+
+# --- pytest: test runner ----------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"                       # tells pytest-qt which Qt binding we use
+addopts = [
+    "--import-mode=importlib",           # test folders don't need __init__.py files
+    "--strict-markers",                  # a typo in a marker name is an error
+]
+markers = [
+    "slow: slow tests such as performance checks; skip with -m \"not slow\"",
+]

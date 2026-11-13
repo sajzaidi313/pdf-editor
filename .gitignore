@@ -1,0 +1,20 @@
+# Files and folders git should not track.
+# Rule of thumb: ignore anything a command can recreate.
+
+# Virtual environment (recreate with: python -m venv .venv)
+.venv/
+
+# Throwaway experiment scripts (see CLAUDE.md, "Working style")
+scratch/
+
+# Python's compiled-bytecode caches
+__pycache__/
+
+# Build outputs (PyInstaller and pip)
+dist/
+build/
+*.egg-info/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/

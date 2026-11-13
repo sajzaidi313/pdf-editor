@@ -1,0 +1,6 @@
+# Per-file-type instructions for git.
+
+# On Windows, git converts line endings in files it believes are text. A small
+# PDF can look like text, and converting it would change its bytes and break
+# the offsets stored inside it. "binary" tells git to never touch these files.
+*.pdf binary
