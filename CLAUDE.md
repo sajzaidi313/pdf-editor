@@ -4,10 +4,10 @@ Read this file at the start of every session. It is the entry point. Detailed co
 
 ## Current status (update at the end of every session)
 
-- **Milestone:** M0 (project skeleton), built and passing locally; first CI run still to be confirmed
-- **Done so far:** context docs; `pyproject.toml`, empty "PDF Editor" window, 2 fixture PDFs, 6 tests, CI workflow
-- **Next step:** push to GitHub and confirm CI is green, then start M1 from `docs/10-build-plan.md`
-- **Known issues / open questions:** the Linux and macOS CI jobs have never run; the Qt library list in `ci.yml` may need a fix after the first push
+- **Milestone:** M0 (project skeleton) done; M1 (open & render) not started
+- **Done so far:** context docs; M0: `pyproject.toml`, empty "PDF Editor" window, 2 fixture PDFs, 6 tests, CI green on Windows/macOS/Linux with Python 3.11 and 3.14
+- **Next step:** start M1 from `docs/10-build-plan.md`
+- **Known issues / open questions:** none
 - **Last updated:** 2026-11-12
 
 ## What we are building
