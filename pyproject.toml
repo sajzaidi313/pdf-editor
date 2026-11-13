@@ -34,11 +34,17 @@ dev = [
     "ruff",               # linter + formatter
     "pyright[nodejs]",    # type checker; [nodejs] bundles the Node.js it runs on
     "pypdf",              # a second PDF library, used in tests as a second opinion
+    "pyinstaller",        # builds the stand-alone app folder (packaging/pdfeditor.spec)
 ]
 
 # Our code lives in src/, so tell setuptools to look there for packages.
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Files that are not Python code are left out of an installed package unless
+# they are listed. resources/ holds the self-test PDF (later: icons, fonts).
+[tool.setuptools.package-data]
+pdfeditor = ["resources/*"]
 
 # --- ruff: linter and formatter ---------------------------------------------
 # Each code switches on a family of checks:

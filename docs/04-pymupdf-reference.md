@@ -9,11 +9,11 @@ Checked against **PyMuPDF 2.1** (the version on PyPI in November 2026). Import a
 ## 1. Open, inspect, close
 
 ```python
-doc = pymupdf.open(path)                  # raises pymupdf.FileDataError / FileNotFoundError
+doc = pymupdf.open(path)                  # raises pymupdf.FileDataError / pymupdf.FileNotFoundError (§13)
 doc = pymupdf.open(stream=data, filetype="pdf")   # from bytes
-doc.is_pdf                                # False for XPS/EPUB/images; we only edit PDFs
-doc.needs_pass                            # True → prompt for password
-doc.authenticate(pw)                      # returns 0 on failure, >0 on success (bitmask of which password)
+doc.is_pdf                                # False for XPS/EPUB/images/HTML/text; we only edit PDFs
+doc.needs_pass                            # truthy → prompt for password. Read it ONCE, before authenticate() (trap below)
+doc.authenticate(pw)                      # returns 0 on failure, >0 on success (2 = user password, 4 = owner password)
 doc.is_encrypted, doc.permissions         # permission bitfield (pymupdf.PDF_PERM_*)
 doc.is_repaired                           # True if MuPDF had to fix a broken file on open
 doc.page_count
@@ -21,9 +21,20 @@ doc.metadata                              # dict: title, author, subject, keywor
 doc.get_toc(simple=False)                 # [[level, title, page_1based, dest_dict], ...]
 doc.get_page_labels()                     # page label rules
 page = doc[i]          # or doc.load_page(i), 0-based
-page.get_label()                          # displayed label like "iv"
-doc.close()
+page.get_label()                          # displayed label like "iv"; "" when the PDF defines no labels
+doc.close()                               # a second close() raises ValueError
 ```
+
+⚠️ ✅ **The `needs_pass` trap.** `doc.needs_pass` is not a harmless question: MuPDF answers it by trying an empty password, and a *wrong* password after the *right* one throws the decryption key away. So reading `needs_pass` after a successful `authenticate()` (or calling `authenticate()` again with a wrong password) silently breaks the document: no exception, but every page renders blank and `get_text()` returns nothing. Rule: read `needs_pass` once, right after `open()`; call `authenticate()` until it succeeds; then touch neither again. `DocumentModel` does this and exposes its own `needs_password` flag. `doc.is_encrypted` is safe to read at any time (it turns False after a successful `authenticate()`). (Tests: `tests/pymupdf_behavior/test_passwords.py::test_reading_needs_pass_after_unlocking_breaks_decryption`, `::test_wrong_password_after_the_right_one_breaks_decryption`. If they ever fail, the trap is fixed upstream and this warning can go.)
+
+✅ Verified in 2.1, each with a test in `tests/pymupdf_behavior/`:
+- Wrong `authenticate()` attempts *before* the right one do no harm, so a retry prompt can reuse one open `Document`. (`test_passwords.py::test_wrong_attempts_before_the_right_one_do_no_harm`)
+- `authenticate()` returns 0 for a wrong password and a positive number for a right one; on an unprotected file it also returns a positive number. (`test_passwords.py::test_authenticate_returns_zero_when_wrong_and_positive_when_right`, `::test_authenticate_on_unprotected_file_reports_success`)
+- A locked document answers `page_count`, but loading a page raises `ValueError("document closed or encrypted")`. (`test_passwords.py::test_locked_document_counts_pages_but_will_not_load_them`)
+- **The file extension proves nothing.** MuPDF looks at the content: an HTML page or an image saved as `x.pdf` opens *without an error* as a 1-page document with `is_pdf == False`. Check `is_pdf` after every open. Content MuPDF recognizes as nothing at all (plain text, random bytes) raises `FileDataError`. (`test_open.py::test_html_saved_as_pdf_opens_but_is_not_a_pdf`, `::test_image_saved_as_pdf_opens_but_is_not_a_pdf`, `::test_garbage_file_raises_file_data_error`)
+- A file whose `startxref` number is wrong still opens, with `is_repaired == True`. (`test_open.py::test_wrong_startxref_is_repaired_on_open`)
+- `page.get_label()` returns each page's label, and `""` on every page when `doc.get_page_labels()` is `[]`. (`test_page_labels.py::test_get_label_returns_each_pages_label`, `::test_document_without_labels_gives_empty_strings_and_no_rules`)
+- Not relied on, good to know: `doc.get_page_numbers("iii")` finds pages by label but is case-sensitive (`"III"` finds nothing), which is why `DocumentModel.find_page()` compares the labels itself.
 
 ## 2. Page geometry
 
@@ -39,6 +50,11 @@ page.set_cropbox(rect)      # rect in unrotated MediaBox-relative coords
 ```
 ✅ Verified: after `set_rotation(90)` on a 612×792 page, `page.rect` = 792×612 while `mediabox` stays 612×792. (Test: `tests/pymupdf_behavior/test_rotation.py::test_set_rotation_90_swaps_rect_but_keeps_mediabox`)
 
+✅ Verified, all in `tests/pymupdf_behavior/test_rotation.py`:
+- `Point(72, 72) * page.rotation_matrix` is `Point(720, 72)` on that rotated page, and `derotation_matrix` undoes `rotation_matrix` at 0/90/180/270. (`::test_rotation_matrix_maps_unrotated_point_to_displayed_point`, `::test_derotation_matrix_undoes_rotation_matrix`)
+- Text positions (`search_for`) are the same on a page at every rotation: they stay unrotated. (`::test_text_positions_stay_unrotated`)
+- With a CropBox of `Rect(30, 40, 582, 762)`, `page.rect` is `Rect(0, 0, 552, 722)`, `cropbox_position` is `(30, 40)`, and text coordinates are measured from the CropBox corner. The two matrices need no extra offset. (`::test_page_rect_starts_at_zero_when_cropped`)
+
 ## 3. Rendering
 
 ```python
@@ -52,6 +68,7 @@ Qt conversion (on the UI side, after the render process sends back the pixel byt
 fmt = QImage.Format.Format_RGB888 if pix.n == 3 else QImage.Format.Format_RGBA8888
 img = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
 ```
+✅ Verified (`tests/pymupdf_behavior/test_pixmap.py`): with `Matrix(z, z)` and `alpha=False` the pixmap is `page.rect` size × `z` (the *displayed*, rotated size), `pix.n == 3`, `pix.stride == 3 * pix.width`, the background is white. A Letter page at `z = 8` is 4896×6336 px = 93 MB, which is why `geometry.render_scale()` caps the size until tiling exists (M3).
 - `clip` lets you render only a tile/region (essential for high zoom).
 - `annots=False` renders page content without annotations (used when the UI draws an annotation being edited itself).
 - Display list for repeated renders of the same page at different zooms: `dl = page.get_displaylist(); dl.get_pixmap(matrix=..., clip=...)`. Parse once, render many. Good for the render process.
@@ -248,8 +265,9 @@ page.wrap_contents()              # wrap in q/Q so our insertions aren't affecte
 
 | Exception | When |
 |---|---|
-| `pymupdf.FileDataError` | Not a PDF / unrecoverably broken |
-| `FileNotFoundError` | Bad path |
+| `pymupdf.FileDataError` | Not a PDF / unrecoverably broken (but see §1: HTML and images open without error) |
+| `pymupdf.EmptyFileError` | 0-byte file. A subclass of `FileDataError` ✅ (`test_open.py::test_empty_file_raises_empty_file_error`) |
+| `pymupdf.FileNotFoundError` | Bad path. ✅ **PyMuPDF's own class** (a `RuntimeError`), *not* Python's built-in `FileNotFoundError`: `except FileNotFoundError:` does not catch it (`test_open.py::test_missing_file_raises_pymupdfs_own_file_not_found_error`) |
 | `ValueError` | Bad arguments (e.g. page out of range, bad rect) |
 | `RuntimeError` | Generic MuPDF errors (journal misuse, save-to-original) |
 | `pymupdf.mupdf.FzErrorArgument` | Journal undo past start, etc. |

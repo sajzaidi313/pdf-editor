@@ -36,10 +36,10 @@ Permissive escape hatch (if ever needed): rendering with **pypdfium2** (Apache-2
 ## 3. Edge-case catalog (handle or at least fail gracefully)
 
 ### Opening
-- Zero-byte file, non-PDF with .pdf extension, HTML error page saved as .pdf → friendly "not a valid PDF".
-- PDF that opens but `page_count == 0` → show message, disable editing.
+- Zero-byte file, non-PDF with .pdf extension, HTML error page saved as .pdf → friendly "not a valid PDF". (MuPDF *opens* HTML and images without an error whatever the file is called, so `DocumentModel` checks `doc.is_pdf`; doc 04 §1.)
+- PDF that opens but `page_count == 0` → show message, disable editing. (M1: refused with a friendly "has no pages" error, since there is nothing to view.)
 - Repaired on open (`doc.is_repaired`) → banner; recommend Save As.
-- Password-protected → prompt with retry (3 attempts then cancel); owner-only restrictions → read-only banner + "Edit anyway" (user's own responsibility; log nothing).
+- Password-protected → prompt with retry (3 attempts then cancel; built in M1). Cancelling leaves the window empty, because the locked file has already replaced the previous document. Owner-only restrictions → read-only banner + "Edit anyway" (user's own responsibility; log nothing); this waits for M4, when there is something to edit.
 - Non-PDF formats MuPDF can open (XPS, EPUB, images) → either refuse, or offer "Convert to PDF" (`pymupdf.open(path).convert_to_pdf()` → bytes → open as PDF). P2.
 - Path with unicode/emoji, network drive, very long path (Windows 260 chars) → use `pathlib`, test with unicode fixture name.
 - File locked by another program (Windows) → reading usually works; saving in place fails → offer Save As.

@@ -47,8 +47,8 @@ Rough effort assumes a beginner working evenings with Claude Code: ~1–2 weeks 
 - File → Open dialog, drag-and-drop, CLI arg, File → Open Recent (max 10, `QSettings`) (V1).
 - Password prompt with retry for encrypted files (S3; doc 09 §3, Opening).
 - `PageView` with all pages stacked; render **synchronously on the UI thread**, visible pages only.
-- Zoom in/out/fit width; Ctrl+wheel; status bar "Page X / N · 125%".
-- Page navigation: PgUp/PgDn, go-to-page box (with page labels, V12).
+- Zoom in/out/fit width; Ctrl+wheel; status bar "Page X / N · 125%". Also 100% (Ctrl+0) and fit page (Ctrl+1), so that V3 is complete here as the MVP table below says.
+- Page navigation: PgUp/PgDn, go-to-page box (with page labels, V12). Also Home/End, to complete V5.
 - **Packaging smoke build:** a first `packaging/pdfeditor.spec` (PyInstaller, one-folder) and a `--self-test` flag: open a bundled fixture, render page 1 offscreen, exit with code 0. Build it once by hand on your machine, then add a build-only CI job that runs the built app with `--self-test` (doc 08 §7). PySide6 + PyMuPDF bundling problems show up here, while the app is still tiny.
 
 **Done when:** a 100-page PDF scrolls acceptably; zoom works; bad files show a friendly error; the packaged build passes `--self-test` in CI.

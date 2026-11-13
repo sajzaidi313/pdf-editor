@@ -4,10 +4,10 @@ Read this file at the start of every session. It is the entry point. Detailed co
 
 ## Current status (update at the end of every session)
 
-- **Milestone:** M0 (project skeleton) done; M1 (open & render) not started
-- **Done so far:** context docs; M0: `pyproject.toml`, empty "PDF Editor" window, 2 fixture PDFs, 6 tests, CI green on Windows/macOS/Linux with Python 3.11 and 3.14
-- **Next step:** start M1 from `docs/10-build-plan.md`
-- **Known issues / open questions:** none
+- **Milestone:** M0 done; M1 (open & render) built and green locally, waiting for its first CI run (the new `package` job)
+- **Done so far:** M0; M1: `DocumentModel` open/close/passwords/page labels, `core/geometry.py`, synchronous `PageView`, zoom, page navigation, Open/Recent/drag-drop/password prompt, `--self-test`, PyInstaller spec, CI package job
+- **Next step:** push and check that CI is green, including `Package` on all three systems; then start M2 from `docs/10-build-plan.md`
+- **Known issues / open questions:** cancelling the password prompt leaves an empty window (the locked file has already replaced the open one; revisit in M4). No log file yet and no placeholder for a page that fails to render (doc 11, 2026-11-12)
 - **Last updated:** 2026-11-12
 
 ## What we are building
@@ -53,17 +53,18 @@ pdf-editor/
 ├── LICENSE                    ← AGPL-3.0 (see docs/09 §2)
 ├── pyproject.toml
 ├── README.md
-├── .github/workflows/ci.yml   ← lint + tests on Windows/macOS/Linux (docs/08 §7)
+├── .github/workflows/ci.yml   ← lint + tests, and a packaged-build self-test, on Windows/macOS/Linux (docs/08 §7)
 ├── docs/                      ← context files (read before coding)
 ├── packaging/
 │   └── pdfeditor.spec         ← PyInstaller build
 ├── scratch/                   ← throwaway experiment scripts (git-ignored)
 ├── src/pdfeditor/
 │   ├── __main__.py            ← `python -m pdfeditor`
-│   ├── app.py                 ← QApplication setup, main window creation
+│   ├── app.py                 ← command line, QApplication setup, main window creation
+│   ├── self_test.py           ← `--self-test`: opens and draws resources/self_test.pdf, exit code 0 = OK
 │   ├── core/                  ← NO Qt imports allowed in here
 │   │   ├── document.py        ← DocumentModel: wraps pymupdf.Document
-│   │   ├── geometry.py        ← PDF ↔ screen coordinate conversion
+│   │   ├── geometry.py        ← PDF ↔ screen coordinate conversion, page layout, zoom math
 │   │   ├── errors.py          ← PdfOpenError, EncryptedError, UnsupportedFeature, SaveError, …
 │   │   ├── commands/          ← one file per undoable command family
 │   │   │   └── base.py        ← Command, InverseCommand, SnapshotCommand (docs/07 §3)
@@ -77,7 +78,7 @@ pdf-editor/
 │   │   └── save.py
 │   ├── render/
 │   │   ├── render_process.py  ← runs in a separate process: page → raw pixels (PyMuPDF only, no Qt)
-│   │   ├── renderer.py        ← UI-side client: sends requests, turns pixels into QImage
+│   │   ├── renderer.py        ← UI-side: turns pixels into QImage (renders synchronously until M3, then asks the render process)
 │   │   └── cache.py           ← LRU cache of rendered pages/tiles
 │   ├── ui/
 │   │   ├── main_window.py
@@ -85,12 +86,13 @@ pdf-editor/
 │   │   ├── doc_signals.py     ← re-emits DocumentModel callbacks as Qt signals
 │   │   ├── page_view.py       ← QGraphicsView canvas
 │   │   ├── page_item.py       ← one QGraphicsItem per page
+│   │   ├── recent_files.py    ← Open Recent list, stored with QSettings
 │   │   ├── thumbnails.py
 │   │   ├── sidebar.py         ← outline, annotations list, search results
-│   │   ├── toolbar.py
+│   │   ├── toolbar.py         ← main toolbar and the go-to-page box
 │   │   ├── tools/             ← one class per interaction tool (select, highlight, ink, …)
-│   │   └── dialogs/
-│   └── resources/             ← icons, .qss stylesheet, fonts/ (+ their license texts)
+│   │   └── dialogs/           ← error_dialog.py, password_dialog.py (plain functions, so tests can replace them)
+│   └── resources/             ← self_test.pdf; later icons, .qss stylesheet, fonts/ (+ their license texts)
 └── tests/
     ├── fixtures/              ← sample PDFs (see docs/08-testing.md)
     │   ├── make_fixtures.py   ← generates most fixture PDFs
@@ -121,7 +123,9 @@ pytest -q                                              # all tests
 pytest tests/core -q                                   # fast, no GUI
 ruff check src tests && ruff format src tests          # lint + format
 pyright                                                # type check
-pyinstaller packaging/pdfeditor.spec                   # build app
+python tests/fixtures/make_fixtures.py                 # regenerate the fixture PDFs
+pyinstaller packaging/pdfeditor.spec --noconfirm       # build app into dist/pdfeditor/
+dist\pdfeditor\pdfeditor.exe --self-test               # check the built app (macOS/Linux: dist/pdfeditor/pdfeditor)
 ```
 
 ## Which doc to read for which task

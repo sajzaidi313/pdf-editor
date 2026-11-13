@@ -21,7 +21,7 @@ On scroll/zoom/resize:
 4. Cancel/deprioritize pending jobs for pages no longer near the viewport.
 5. Debounce: during continuous zooming (Ctrl+wheel), wait ~120 ms after the last zoom event before requesting sharp renders; show scaled cached images meanwhile.
 
-"Current page" for the status bar = page whose area covers the viewport center line.
+"Current page" for the status bar = the page with the largest share of itself inside the viewport; ties go to the earlier page (`geometry.most_visible_page`). The first idea, "the page under the viewport's center line", was dropped in M1: when several whole pages fit in the window (50% zoom in a maximized window), "go to page 5" put page 5 at the top but reported page 6.
 
 ## 3. Render pipeline
 
@@ -106,7 +106,9 @@ Hybrid used for editing: while one annotation is being moved, temporarily set it
 - Zoom steps: 25, 33, 50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500, 600, 800 %.
 - Ctrl+wheel and pinch (`QNativeGestureEvent` on macOS trackpads) zoom anchored at cursor: `view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)`.
 - Fit width: `zoom = (viewport_width - margins) / max_page_width_pt`. Fit page: min of width/height fits for current page. Recompute on window resize when in a fit mode.
-- 100% means 72 dpi × dpr; some apps use 96 dpi as "actual size". Pick 100% = physical size on screen ≈ `zoom = logicalDpiX / 72`. Document the choice.
+- **Decision (M1): 100% = real paper size**, like Acrobat and browsers. The view transform is `geometry.view_scale(zoom, logicalDpiX) = zoom × logicalDpiX / 72` pixels per point (1.33 at 100% on a standard 96-dpi Windows screen). "Zoom" everywhere in the UI means this user-facing number; "scale" means pixels per point.
+- Fit modes stay on until the user picks a zoom: the view recomputes them on resize. The vertical scroll bar is always shown so the usable width can't flip-flop.
+- Until tiling exists (M3, §4), `geometry.render_scale` caps a page image at 4096 px on its longer side; above roughly 500% the page is a stretched image and looks slightly soft.
 
 ## 8. Text selection & hit-testing
 

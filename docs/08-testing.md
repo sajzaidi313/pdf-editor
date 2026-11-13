@@ -27,7 +27,8 @@ Generate most fixtures **with a script** (`tests/fixtures/make_fixtures.py`) usi
 | `with_annotations.pdf` | one of each annot type, authored by "Other App" | generated |
 | `form_acro.pdf` | text, checkbox (on state "Yes"), radio group (3), combo, list, read-only field, multiline | generated with `add_widget` |
 | `form_xfa.pdf` | XFA detection | small real sample (check license) or craft by setting `AcroForm/XFA` key via `xref_set_key` |
-| `encrypted_user_pw.pdf` | password "test" | generated: `save(encryption=AES_256, user_pw="test", owner_pw="owner")` |
+| `encrypted_user_pw.pdf` | password "test" | generated: `save(encryption=AES_256, user_pw="test", owner_pw="owner")`; written only when missing, because encrypted output is never byte-identical twice |
+| `page_labels.pdf` | page labels i–iv then 1–4 (go-to-page box, V12) | generated + `set_page_labels` |
 | `owner_only_restricted.pdf` | opens without pw, no-modify permission | generated |
 | `secret_for_redaction.pdf` | text "SECRET-4471", an image containing a known region, vector line under secret, a table border rectangle that crosses the redaction area | generated |
 | `outline_nested.pdf` | 3-level TOC | generated + `set_toc` |
@@ -36,7 +37,7 @@ Generate most fixtures **with a script** (`tests/fixtures/make_fixtures.py`) usi
 | `scanned_no_text.pdf` | image-only page | generated: insert a PNG of text |
 | `large_500_pages.pdf` | performance | generated on demand in a perf test (don't commit) |
 | `broken_xref.pdf` | repair path (`is_repaired`) | take `simple_text.pdf` bytes and corrupt the xref offset |
-| `not_a_pdf.pdf` | error path | random bytes |
+| `not_a_pdf.pdf` | error path | one fixed line of text (not random bytes, so the file is the same on every run) |
 | `cjk_text.pdf` | non-Latin extraction/search | generated with a bundled CJK font if shipped |
 
 Add `tests/fixtures/README.md` describing each file and its expected facts (e.g. "page 1 contains the word 'Lorem' at approx (72, 90)").
@@ -126,7 +127,7 @@ def test_redaction_removes_text(tmp_path):
 - Save As switches model path.
 
 ### Extras
-- Page labels: fixture with labels i–iv then 1–n → go-to "iii" lands on page index 2; go-to "5" uses the number.
+- Page labels: `page_labels.pdf` (labels i–iv then 1–4) → go-to "iii" (or "III") lands on page index 2; go-to "3" finds the page *labelled* 3 (index 6), because a label wins; go-to "5" matches no label and so means the fifth page (index 4).
 - Export comments: highlight a known sentence in `simple_text.pdf` + add a note → Markdown contains the sentence, the note text and the right page number.
 - Measure: `core/measure.py` table tests (distance, perimeter, area of known shapes; calibration by known length).
 - Night mode: normal and inverted renders of the same page get different cache keys; a white pixel renders black when inverted.
@@ -141,9 +142,11 @@ def test_redaction_removes_text(tmp_path):
 - `tests/core/test_no_qt_in_core.py`: in a fresh subprocess (`subprocess.run([sys.executable, "-c", ...])`), import every module under `pdfeditor.core` (use `pkgutil.walk_packages`) plus `pdfeditor.render.render_process`, then assert no name in `sys.modules` starts with `PySide6`. A subprocess is needed because pytest-qt has already imported Qt in the test process.
 
 ### Errors
-- `not_a_pdf.pdf` → `PdfOpenError` with friendly message.
+- `not_a_pdf.pdf` → `PdfOpenError` with friendly message. Same for a missing file, a 0-byte file, a folder, and an HTML page saved as `.pdf` (which PyMuPDF opens without complaint; doc 04 §1).
+- A failed open leaves the previously open document untouched.
 - `broken_xref.pdf` → opens, `is_repaired` True → model exposes `was_repaired`.
-- Wrong password → `authenticate` returns 0 → retry flow (core returns status, not exception).
+- Wrong password → `model.authenticate()` returns False → retry flow (core returns status, not exception). Asking for a page while still locked raises `EncryptedError`.
+- After unlocking, further `authenticate()` / `needs_password` calls on the model leave the document readable (guards the `needs_pass` trap, doc 04 §1).
 
 ### Performance (marked `@pytest.mark.slow`)
 - Open `large_500_pages.pdf` + render page 1 at zoom 1.0 in < 1.5 s (the spec's target, doc 01 §4). CI machines vary, so log the timing every run and treat a failure as "investigate", not as flaky.

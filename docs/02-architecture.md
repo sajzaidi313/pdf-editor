@@ -47,7 +47,6 @@ import pymupdf
 
 ChangeListener = Callable[["DocChange"], None]
 
-@dataclass(frozen=True)
 class ChangeKind(StrEnum):   # an Enum, so a typo like "annot" fails loudly instead of silently
     PAGES_CHANGED = "pages_changed"   # pages added/removed/reordered/rotated
     PAGE_CONTENT = "page_content"
@@ -56,6 +55,7 @@ class ChangeKind(StrEnum):   # an Enum, so a typo like "annot" fails loudly inst
     METADATA = "metadata"
     RELOADED = "reloaded"             # whole Document object replaced (snapshot undo/redo, reopen after save)
 
+@dataclass(frozen=True)
 class DocChange:
     kind: ChangeKind
     pages: tuple[int, ...] = ()   # affected page indices (empty = all)
@@ -67,9 +67,15 @@ class DocumentModel:
         self.revision: int = 0            # bumps on every notify(); the render process's snapshot generation. Per-page cache invalidation uses page_rev (doc 05 §5)
         self._listeners: list[ChangeListener] = []
 
-    # lifecycle
-    def open(self, path: Path, password: str | None = None) -> None: ...
+    # lifecycle (built in M1)
+    def open(self, path: Path, password: str | None = None) -> None: ...   # raises PdfOpenError; a failed open keeps the current document
     def close(self) -> None: ...
+    was_repaired: bool                    # MuPDF had to fix the file on open
+    @property
+    def needs_password(self) -> bool: ... # the file opened "locked"; our own flag, never doc.needs_pass (doc 04 §1)
+    def authenticate(self, password: str) -> bool: ...   # False = wrong password (a status, not an exception)
+    def page_label(self, index: int) -> str: ...         # "iv", or "" without labels
+    def find_page(self, text: str) -> int | None: ...    # page box input → index: label first, then page number
     @property
     def is_dirty(self) -> bool: ...       # undo stack clean index + unsaved_outside_history flag, see doc 07 §6
 
@@ -128,6 +134,8 @@ class PagePlacement:
     page_index: int
     origin_x: float          # top-left of the page in scene units (PDF points)
     origin_y: float
+    width: float             # displayed (rotated) size in points, from page.rect
+    height: float
     rotation_matrix: pymupdf.Matrix     # copied from page.rotation_matrix
     derotation_matrix: pymupdf.Matrix   # copied from page.derotation_matrix
 
@@ -140,11 +148,16 @@ class PagePlacement:
         shown = p * self.rotation_matrix
         return shown.x + self.origin_x, shown.y + self.origin_y
 
-def render_matrix(zoom: float, dpr: float) -> pymupdf.Matrix:
-    s = zoom * dpr           # zoom 1.0 = 72 dpi; dpr = devicePixelRatio (2.0 on Retina)
-    return pymupdf.Matrix(s, s)
+def view_scale(zoom: float, logical_dpi: float) -> float:
+    return zoom * logical_dpi / 72        # screen pixels per point; zoom 1.0 = 100% = real paper size (doc 05 §7)
+
+def render_scale(scale: float, dpr: float, page_width: float, page_height: float) -> float:
+    ...                                   # scale * dpr (dpr = devicePixelRatio, 2.0 on Retina), capped at 4096 px until tiling (M3)
+
+def render_matrix(scale: float) -> pymupdf.Matrix:
+    return pymupdf.Matrix(scale, scale)
 ```
-The view's own zoom transform (scene ↔ viewport pixels) is handled by Qt (`view.mapToScene`), so geometry.py never needs the zoom except for choosing render resolution. Unit-test both directions for rotations 0/90/180/270 (doc 08).
+The same file also has the layout and visibility helpers (`layout_pages`, `visible_pages`, `most_visible_page`) and the zoom steps. The view's own zoom transform (scene ↔ viewport pixels) is handled by Qt (`view.mapToScene`), so geometry.py never needs the zoom except for choosing the view scale and the render resolution. Unit-test both directions for rotations 0/90/180/270 (doc 08).
 
 Rotation is handled by PyMuPDF: `page.rect` and rendered pixmaps already reflect `/Rotate`; annotation and text coordinates are in **unrotated** space. Use `page.rotation_matrix` / `page.derotation_matrix` when converting. Full explanation: doc 03 §3.
 
@@ -233,8 +246,8 @@ Tool list: `SelectTool` (text select + annotation select/move/resize), `HandTool
 5. Model notifies → render cache invalidates page 3 → PageItem requests re-render → annotations sidebar refreshes → window title shows `*`.
 
 **Opening a file**
-1. `File > Open` → dialog → `model.open(path)` (catch `pymupdf.FileDataError`, check `doc.needs_pass` → password dialog → `doc.authenticate(pw)`).
-2. Check `doc.is_repaired` → if True, show non-blocking banner "File was damaged and repaired on open; save a copy."
+1. `File > Open` → dialog → `MainWindow.open_path(path)` → `model.open(path)`. Core turns PyMuPDF's errors into `PdfOpenError`; the UI catches that and shows the error dialog, and the document that was open stays open. If `model.needs_password` → password dialog → `model.authenticate(pw)`, three tries at most. (Recent files, drag-and-drop and the command line all go through `open_path` too.)
+2. Check `model.was_repaired` → if True, tell the user "File was damaged and repaired on open" (a status-bar message since M1; a non-blocking banner with "save a copy" once saving exists).
 3. Check XFA (doc 06 §F) → banner if present.
 4. PageView builds PageItems using `page.rect` sizes only (cheap; no rendering yet).
 5. Visible pages request renders.
@@ -243,7 +256,7 @@ Tool list: `SelectTool` (text select + annotation select/move/resize), `HandTool
 
 | Where | What to do |
 |---|---|
-| Core functions | Raise specific exceptions (`PdfOpenError`, `EncryptedError`, `UnsupportedFeature`, `SaveError`). Never `print` + continue. |
+| Core functions | Raise specific exceptions (`PdfOpenError`, `EncryptedError`, `UnsupportedFeature`, `SaveError`), all subclasses of `PdfEditorError`, with a message that can be shown to the user and the PyMuPDF error attached as its cause. `EncryptedError` means "pages were asked for while the document is still locked"; a wrong password is not an error (`authenticate()` returns False). Never `print` + continue. |
 | Commands `do()` | If core raises, the command must leave the doc unchanged (do the risky part first, or snapshot). Re-raise. |
 | UI (slots, tool handlers) | `try/except` → `QMessageBox.warning` with a human message + "Details" containing traceback. Log to file. |
 | Render process | Catch everything, send back `failed(page_index, message)`. If the process dies or times out, restart it. PageItem shows an error placeholder. |

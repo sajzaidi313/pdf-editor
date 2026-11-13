@@ -9,9 +9,12 @@ The word "fixture" means two different things in this project:
   with no setup code of their own.
 """
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+from pdfeditor.core.document import DocumentModel
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -20,3 +23,17 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def fixtures_dir() -> Path:
     """Folder that holds the sample PDFs."""
     return FIXTURES_DIR
+
+
+@pytest.fixture
+def model() -> Iterator[DocumentModel]:
+    """An empty DocumentModel that is closed again when the test ends.
+
+    A fixture that uses `yield` runs in two halves: everything before the
+    yield prepares the test, everything after it cleans up, even when the
+    test failed. Closing matters on Windows, where an open file cannot be
+    deleted and pytest wants to remove its temporary folders.
+    """
+    document_model = DocumentModel()
+    yield document_model
+    document_model.close()
